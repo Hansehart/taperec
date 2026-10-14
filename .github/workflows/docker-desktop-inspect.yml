@@ -19,7 +19,7 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "$RUNNER_TEMP/Docker.dmg"
           defaults read "$RUNNER_TEMP/dmg/Docker.app/Contents/Info.plist" CFBundleShortVersionString | tee out/version.txt
 
-      # Go embeds its module list as plain "path/mod/dep" lines in every binary it builds.
+      # Go keeps package paths in every binary, even stripped, so strings shows which libraries it uses.
       - name: Binaries, modules and libraries
         run: |
           app="$RUNNER_TEMP/dmg/Docker.app"
@@ -32,6 +32,7 @@ jobs:
               { echo "### $rel"; cat "$RUNNER_TEMP/mods"; } >> out/go-modules.txt
             fi
             { echo "### $rel"; otool -L "$f" 2>&1; } >> out/linked-libs.txt
+            printf '%s\t%s\n' "$(strings -a "$f" | grep -c 'gvisor.dev/gvisor')" "$rel" >> out/gvisor-paths.txt
           done
           grep -iE 'gvisor|vpnkit|tap-vsock|krun|vfkit|netstack' out/go-modules.txt > out/networking-modules.txt || true
           find "$app" -iname '*licen*' -o -iname '*notice*' -o -iname '*third*party*' | sed "s|$app/||" > out/license-files.txt

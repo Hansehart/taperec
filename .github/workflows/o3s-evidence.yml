@@ -1,6 +1,6 @@
 name: o3s evidence
 
-# Measures the cage's egress window and route bypass on Docker Desktop for Mac and Linux, with and without an internal cage network.
+# Tests an internal cage network with an explicit proxy listener on Docker Desktop for Mac and Linux.
 on:
   workflow_dispatch:
 
@@ -13,7 +13,6 @@ jobs:
       fail-fast: false
       matrix:
         runner: [macos-26-intel, ubuntu-24.04]
-        cage: [as-is, internal]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -37,19 +36,16 @@ jobs:
         timeout-minutes: 8
         run: docker desktop start --timeout 360
 
-      - name: Clone o3s
+      # Marks this run's copy of the cage network internal and adds a regular-mode proxy listener (mitmproxy mode_specs).
+      - name: Clone and adapt o3s
         run: |
           mkdir -p out
           git clone --depth 1 https://github.com/Hansehart/o3s.git "$HOME/o3s"
+          compose="$HOME/o3s/.devcontainer/compose.yaml"
+          yq -i '.networks.cage.internal = true' "$compose"
+          yq -i '.services.proxy.command += ["--mode", "regular@10.10.0.2:8080"]' "$compose"
+          yq '{"networks": .networks, "proxy": .services.proxy.command}' "$compose" | tee out/compose-changes.yaml
 
-      # Marks only this run's copy of the cage network internal.
-      - name: Internal cage network
-        if: matrix.cage == 'internal'
-        run: |
-          yq -i '.networks.cage.internal = true' "$HOME/o3s/.devcontainer/compose.yaml"
-          yq '.networks' "$HOME/o3s/.devcontainer/compose.yaml" | tee out/networks.yaml
-
-      # The poller watches the cage from its first second while devcontainer up raises the stack.
       - name: Raise o3s while polling the cage
         timeout-minutes: 30
         run: |
@@ -60,30 +56,17 @@ jobs:
           kill "$poller" 2>/dev/null || true
           grep -E '\[o3s\]' out/up.log | tee out/o3s-check.txt || true
 
-      - name: Network dump
-        timeout-minutes: 5
-        run: .github/scripts/o3s-evidence.sh > out/network.txt 2>&1
+      # The gateway admits cage traffic to its own ports 53 and 8443 only.
+      - name: Open the proxy listener to the cage
+        run: docker exec o3s-gateway-1 iptables -I INPUT -s 10.10.0.0/24 -p tcp --dport 8080 -j ACCEPT
 
-      - name: Route bypass
-        timeout-minutes: 5
-        run: .github/scripts/o3s-bypass.sh > out/bypass.txt 2>&1
-
-      # o3s's own suite shows the internal network keeps Linux confinement intact.
-      - name: o3s test suite
-        if: runner.os == 'Linux' && matrix.cage == 'internal'
-        timeout-minutes: 25
-        run: |
-          mkdir -p "$RUNNER_TEMP/bin"
-          printf '#!/bin/sh\nexec npx -y @devcontainers/cli@0.89.0 "$@"\n' > "$RUNNER_TEMP/bin/devcontainer"
-          chmod +x "$RUNNER_TEMP/bin/devcontainer"
-          export PATH="$RUNNER_TEMP/bin:$PATH"
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --quiet pytest pytest-testinfra
-          cd "$HOME/o3s" && "$RUNNER_TEMP/venv/bin/pytest" test -v -rA > "$GITHUB_WORKSPACE/out/suite.txt" 2>&1 || true
+      - name: Egress tests
+        timeout-minutes: 10
+        run: .github/scripts/o3s-proxy-test.sh > out/proxy-test.txt 2>&1
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: evidence-${{ matrix.runner }}-${{ matrix.cage }}
+          name: evidence-${{ matrix.runner }}
           path: out/
           if-no-files-found: warn
