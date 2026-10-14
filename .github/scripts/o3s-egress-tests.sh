@@ -7,7 +7,7 @@ dump() { printf '\n### %s\n' "$*"; "$@" 2>&1; }
 code() { cage curl -sS --connect-timeout 10 -o /dev/null -w '%{http_code}\n' "$@"; }
 
 bridge="br-$(docker network inspect o3s-cage --format '{{.Id}}' | cut -c1-12)"
-mac=$(docker run --rm --privileged --pid=host alpine:3 nsenter -t 1 -n -- cat "/sys/class/net/$bridge/address" 2>&1)
+mac=$(docker run --rm --privileged --pid=host alpine:3 nsenter -t 1 -n -- ip -o link show "$bridge" | grep -oE 'link/ether [0-9a-f:]+' | cut -d' ' -f2)
 dump echo "bridge=$bridge mac=$mac"
 dump docker network inspect o3s-cage --format '{{json .Internal}} {{json .Options}} {{json .IPAM.Config}}'
 dump docker run --rm --privileged --pid=host alpine:3 nsenter -t 1 -n -- ip addr show "$bridge"

@@ -3,6 +3,10 @@ name: o3s evidence
 # Tests a gateway-less cage bridge and the bridge firewall's role in o3s egress on Docker Desktop for Mac and Linux.
 on:
   workflow_dispatch:
+    inputs:
+      variants:
+        description: JSON list of variants (inhibit, brnf-off, brnf-on)
+        default: '["inhibit", "brnf-off", "brnf-on"]'
 
 permissions:
   contents: read
@@ -12,13 +16,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: macos-26-intel, variant: inhibit }
-          - { runner: ubuntu-24.04, variant: inhibit }
-          - { runner: macos-26-intel, variant: brnf-off }
-          - { runner: ubuntu-24.04, variant: brnf-on }
+        variant: ${{ fromJSON(inputs.variants) }}
+        runner: [macos-26-intel, ubuntu-24.04]
+        exclude:
+          - { runner: macos-26-intel, variant: brnf-on }
+          - { runner: ubuntu-24.04, variant: brnf-off }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env:
+      VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -46,7 +52,7 @@ jobs:
           mkdir -p out
           git clone --depth 1 https://github.com/Hansehart/o3s.git "$HOME/o3s"
           compose="$HOME/o3s/.devcontainer/compose.yaml"
-          case "${{ matrix.variant }}" in
+          case "$VARIANT" in
             inhibit) yq -i '.networks.cage.driver_opts["com.docker.network.bridge.inhibit_ipv4"] = "true"' "$compose" ;;
             brnf-*) yq -i '.networks.cage.internal = true' "$compose" ;;
           esac
@@ -56,7 +62,7 @@ jobs:
       - name: Flip bridge firewalling
         if: startsWith(matrix.variant, 'brnf-')
         run: |
-          if [ "${{ matrix.variant }}" = brnf-on ]; then
+          if [ "$VARIANT" = brnf-on ]; then
             sudo modprobe br_netfilter
           else
             docker run --rm --privileged --pid=host alpine:3 nsenter -t 1 -n -- sysctl -w net.bridge.bridge-nf-call-iptables=0
