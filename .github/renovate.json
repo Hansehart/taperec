@@ -1,0 +1,71 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "abandonments:recommended",
+    ":configMigration",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Europe/Berlin",
+  "labels": ["renovate"],
+  "semanticCommits": "enabled",
+  "semanticCommitScope": "deps",
+  "pinDigests": true,
+  "minimumReleaseAge": "3 days",
+  "prBodyColumns": ["Package", "Type", "Update", "Change", "Age"],
+  "prBodyDefinitions": {
+    "Age": "{{#if newVersion}}{{{newVersionAgeInDays}}} days{{/if}}"
+  },
+  "vulnerabilityAlerts": {
+    "addLabels": ["security"]
+  },
+  "pre-commit": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Commit tooling bumps with the chore type.",
+      "matchManagers": ["custom.regex", "dockerfile", "github-actions", "pre-commit"],
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "Group GitHub Action and runner updates into a single pull request.",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Move the toolchain pin and its build image together; they change what is built.",
+      "matchDepNames": ["rust"],
+      "groupName": "Rust toolchain",
+      "semanticCommitType": "build"
+    },
+    {
+      "description": "Label major updates so they get a deliberate review.",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["breaking"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track tool images pinned as name:tag@digest in scripts, hooks and workflows.",
+      "managerFilePatterns": [
+        "/^lint\\.sh$/",
+        "/^\\.pre-commit-config\\.yaml$/",
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?<depName>[a-z0-9][a-z0-9./-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the pre-commit version CI runs.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["pre-commit==(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "pre-commit"
+    }
+  ]
+}

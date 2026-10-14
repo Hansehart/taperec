@@ -19,6 +19,7 @@ jobs:
           FROM: ${{ github.event.pull_request.base.sha }}
           TO: ${{ github.event.pull_request.head.sha }}
         run: |
-          docker run --rm -v "$PWD":/src -w /src \
-            commitlint/commitlint@sha256:33f225c84111a38ebac0c81fa21c488a79709b8a8e04056dfaaf4f80ef20be25 \
+          # The checkout's owner runs git, so git trusts the repository.
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/src -w /src \
+            commitlint/commitlint:21.2.3@sha256:33f225c84111a38ebac0c81fa21c488a79709b8a8e04056dfaaf4f80ef20be25 \
             --verbose --from "$FROM" --to "$TO"
