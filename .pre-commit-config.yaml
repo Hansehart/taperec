@@ -57,6 +57,6 @@ repos:
 
       - id: commitlint
         name: commitlint
-        entry: commitlint/commitlint@sha256:33f225c84111a38ebac0c81fa21c488a79709b8a8e04056dfaaf4f80ef20be25 --edit
+        entry: commitlint/commitlint:21.2.3@sha256:33f225c84111a38ebac0c81fa21c488a79709b8a8e04056dfaaf4f80ef20be25 --edit
         language: docker_image
         stages: [commit-msg]
