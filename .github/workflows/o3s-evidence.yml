@@ -1,6 +1,6 @@
 name: o3s evidence
 
-# Measures the cage's egress window and route bypass on Docker Desktop for Mac and Linux, with and without an internal cage network.
+# Tests a gateway-less cage bridge and the bridge firewall's role in o3s egress on Docker Desktop for Mac and Linux.
 on:
   workflow_dispatch:
 
@@ -12,8 +12,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-26-intel, ubuntu-24.04]
-        cage: [as-is, internal]
+        include:
+          - { runner: macos-26-intel, variant: inhibit }
+          - { runner: ubuntu-24.04, variant: inhibit }
+          - { runner: macos-26-intel, variant: brnf-off }
+          - { runner: ubuntu-24.04, variant: brnf-on }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -37,19 +40,28 @@ jobs:
         timeout-minutes: 8
         run: docker desktop start --timeout 360
 
-      - name: Clone o3s
+      # inhibit keeps the cage bridge non-internal without an IPv4 address (moby inhibit_ipv4); brnf-* mark it internal.
+      - name: Clone and adapt o3s
         run: |
           mkdir -p out
           git clone --depth 1 https://github.com/Hansehart/o3s.git "$HOME/o3s"
+          compose="$HOME/o3s/.devcontainer/compose.yaml"
+          case "${{ matrix.variant }}" in
+            inhibit) yq -i '.networks.cage.driver_opts["com.docker.network.bridge.inhibit_ipv4"] = "true"' "$compose" ;;
+            brnf-*) yq -i '.networks.cage.internal = true' "$compose" ;;
+          esac
+          yq '.networks' "$compose" | tee out/networks.yaml
 
-      # Marks only this run's copy of the cage network internal.
-      - name: Internal cage network
-        if: matrix.cage == 'internal'
+      # Sets bridge firewalling against each platform's default (linuxkit builds it in, Ubuntu loads it as a module).
+      - name: Flip bridge firewalling
+        if: startsWith(matrix.variant, 'brnf-')
         run: |
-          yq -i '.networks.cage.internal = true' "$HOME/o3s/.devcontainer/compose.yaml"
-          yq '.networks' "$HOME/o3s/.devcontainer/compose.yaml" | tee out/networks.yaml
+          if [ "${{ matrix.variant }}" = brnf-on ]; then
+            sudo modprobe br_netfilter
+          else
+            docker run --rm --privileged --pid=host alpine:3 nsenter -t 1 -n -- sysctl -w net.bridge.bridge-nf-call-iptables=0
+          fi
 
-      # The poller watches the cage from its first second while devcontainer up raises the stack.
       - name: Raise o3s while polling the cage
         timeout-minutes: 30
         run: |
@@ -60,30 +72,21 @@ jobs:
           kill "$poller" 2>/dev/null || true
           grep -E '\[o3s\]' out/up.log | tee out/o3s-check.txt || true
 
-      - name: Network dump
-        timeout-minutes: 5
-        run: .github/scripts/o3s-evidence.sh > out/network.txt 2>&1
+      - name: Keep bridge firewalling off
+        if: matrix.variant == 'brnf-off'
+        run: docker run --rm --privileged --pid=host alpine:3 nsenter -t 1 -n -- sysctl -w net.bridge.bridge-nf-call-iptables=0
 
-      - name: Route bypass
+      - name: Engine facts
         timeout-minutes: 5
-        run: .github/scripts/o3s-bypass.sh > out/bypass.txt 2>&1
+        run: .github/scripts/o3s-engine-facts.sh > out/engine-facts.txt 2>&1
 
-      # o3s's own suite shows the internal network keeps Linux confinement intact.
-      - name: o3s test suite
-        if: runner.os == 'Linux' && matrix.cage == 'internal'
-        timeout-minutes: 25
-        run: |
-          mkdir -p "$RUNNER_TEMP/bin"
-          printf '#!/bin/sh\nexec npx -y @devcontainers/cli@0.89.0 "$@"\n' > "$RUNNER_TEMP/bin/devcontainer"
-          chmod +x "$RUNNER_TEMP/bin/devcontainer"
-          export PATH="$RUNNER_TEMP/bin:$PATH"
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --quiet pytest pytest-testinfra
-          cd "$HOME/o3s" && "$RUNNER_TEMP/venv/bin/pytest" test -v -rA > "$GITHUB_WORKSPACE/out/suite.txt" 2>&1 || true
+      - name: Egress tests
+        timeout-minutes: 10
+        run: .github/scripts/o3s-egress-tests.sh > out/egress.txt 2>&1
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: evidence-${{ matrix.runner }}-${{ matrix.cage }}
+          name: evidence-${{ matrix.runner }}-${{ matrix.variant }}
           path: out/
           if-no-files-found: warn
