@@ -1,0 +1,24 @@
+name: commitlint
+
+# Lints the commit messages a pull request adds.
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: commitlint
+        env:
+          FROM: ${{ github.event.pull_request.base.sha }}
+          TO: ${{ github.event.pull_request.head.sha }}
+        run: |
+          docker run --rm -v "$PWD":/src -w /src \
+            commitlint/commitlint@sha256:33f225c84111a38ebac0c81fa21c488a79709b8a8e04056dfaaf4f80ef20be25 \
+            --verbose --from "$FROM" --to "$TO"

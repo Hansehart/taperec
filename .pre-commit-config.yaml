@@ -1,0 +1,62 @@
+fail_fast: true
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+
+repos:
+  # Checks for every file and commit, whatever the language.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: no-commit-to-branch
+      - id: trailing-whitespace
+
+  # Checks with the project's own pinned tools, so each tool has one source of truth.
+  - repo: local
+    hooks:
+      - id: lint
+        name: lint (shellcheck, actionlint, zizmor, typos)
+        entry: ./lint.sh
+        language: unsupported
+        pass_filenames: false
+
+      - id: action-tests
+        name: action script tests
+        entry: ./tests/action.sh
+        language: unsupported
+        pass_filenames: false
+
+      - id: rustfmt
+        name: rustfmt
+        entry: ./test.sh fmt --check
+        language: unsupported
+        pass_filenames: false
+
+      - id: clippy
+        name: clippy
+        entry: ./test.sh clippy --all-targets -- -D warnings
+        language: unsupported
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: ./test.sh test
+        language: unsupported
+        pass_filenames: false
+
+      - id: cargo-doc
+        name: cargo doc
+        entry: ./test.sh doc --no-deps --document-private-items
+        language: unsupported
+        pass_filenames: false
+
+      - id: commitlint
+        name: commitlint
+        entry: commitlint/commitlint@sha256:33f225c84111a38ebac0c81fa21c488a79709b8a8e04056dfaaf4f80ef20be25 --edit
+        language: docker_image
+        stages: [commit-msg]

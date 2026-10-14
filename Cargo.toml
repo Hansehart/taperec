@@ -1,0 +1,28 @@
+[package]
+name = "taperec"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+description = "Record scripted desktop tutorials from .tape files"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unused = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+indexing_slicing = "deny"
+as_conversions = "deny"
+print_stdout = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

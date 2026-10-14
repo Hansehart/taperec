@@ -1,0 +1,37 @@
+name: taperec
+description: Record scripted macOS tutorial videos from .tape files.
+author: Hansehart
+branding:
+  icon: film
+  color: purple
+
+inputs:
+  tapes:
+    description: Tape files to record, one glob per line.
+    required: true
+  out-dir:
+    description: Directory for the videos and failure screenshots.
+    default: taperec
+  dock:
+    description: Apps the Dock shows, one name per line, e.g. Terminal.
+    default: ""
+  from-source:
+    description: Build taperec from the action's source instead of downloading its release.
+    default: "false"
+
+outputs:
+  videos:
+    description: Paths of the recorded videos, one per line.
+    value: ${{ steps.record.outputs.videos }}
+
+runs:
+  using: composite
+  steps:
+    - id: record
+      shell: bash
+      env:
+        INPUT_TAPES: ${{ inputs.tapes }}
+        INPUT_OUT_DIR: ${{ inputs.out-dir }}
+        INPUT_DOCK: ${{ inputs.dock }}
+        INPUT_FROM_SOURCE: ${{ inputs.from-source }}
+      run: bash --noprofile --norc "$GITHUB_ACTION_PATH/action/main.sh"

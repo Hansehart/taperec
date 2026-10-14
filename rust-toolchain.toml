@@ -1,0 +1,5 @@
+# Matches the rust:1.99.0-bookworm image in dev.Dockerfile.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

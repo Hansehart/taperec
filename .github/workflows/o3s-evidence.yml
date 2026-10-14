@@ -1,0 +1,66 @@
+name: o3s evidence
+
+# Measures the cage's start-up egress window and route bypass on Docker Desktop for Mac, against Linux as control.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26-intel, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      # Installs from the command line as docker/docs mac-install.md describes.
+      - name: Install Docker Desktop
+        if: runner.os == 'macOS'
+        timeout-minutes: 12
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/Docker.dmg" https://desktop.docker.com/mac/main/amd64/Docker.dmg
+          sudo hdiutil attach "$RUNNER_TEMP/Docker.dmg"
+          sudo /Volumes/Docker/Docker.app/Contents/MacOS/install --accept-license --user="$USER"
+          sudo hdiutil detach /Volumes/Docker
+          echo "/Applications/Docker.app/Contents/Resources/bin" >> "$GITHUB_PATH"
+
+      - name: Start Docker Desktop
+        if: runner.os == 'macOS'
+        timeout-minutes: 8
+        run: docker desktop start --timeout 360
+
+      - name: Clone o3s
+        run: |
+          mkdir -p out
+          git clone --depth 1 https://github.com/Hansehart/o3s.git "$HOME/o3s"
+
+      # The poller watches the cage from its first second while devcontainer up raises the stack.
+      - name: Raise o3s while polling the cage
+        timeout-minutes: 30
+        run: |
+          .github/scripts/o3s-window.sh 1500 > out/window.txt 2>&1 &
+          poller=$!
+          npx -y @devcontainers/cli@0.89.0 up --workspace-folder "$HOME/o3s" > out/up.json 2> out/up.log || true
+          sleep 60
+          kill "$poller" 2>/dev/null || true
+          grep -E '\[o3s\]' out/up.log || true
+
+      - name: Dev Containers compose overrides
+        run: find "${TMPDIR:-/tmp}" -path '*devcontainercli*' -name '*.yml' -exec sh -c 'echo "### $1"; cat "$1"' _ {} \; > out/overrides.txt 2>&1 || true
+
+      - name: Route bypass
+        run: .github/scripts/o3s-bypass.sh > out/bypass.txt 2>&1
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: evidence-${{ matrix.runner }}
+          path: out/
+          if-no-files-found: warn

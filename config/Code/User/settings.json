@@ -1,0 +1,20 @@
+{
+    // A quiet first start: no trust prompt, welcome page, tips or chat panel.
+    "security.workspace.trust.enabled": false,
+    "workbench.startupEditor": "none",
+    "workbench.tips.enabled": false,
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "chat.disableAIFeatures": true,
+    "extensions.ignoreRecommendations": true,
+    "telemetry.telemetryLevel": "off",
+    "update.mode": "none",
+    "window.restoreWindows": "none",
+    // Typed text lands exactly as written.
+    "editor.autoClosingBrackets": "never",
+    "editor.autoClosingQuotes": "never",
+    "editor.acceptSuggestionOnEnter": "off",
+    "editor.quickSuggestions": { "other": "off", "comments": "off", "strings": "off" },
+    // Empty segments collapse (labels.ts), so a local window has two parts and
+    // one connected to a dev container three: tapes wait on that, not on wording.
+    "window.title": "${rootName}${separator}${remoteName}${separator}${appName}"
+}

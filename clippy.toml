@@ -1,0 +1,12 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Side effects go through fakeable seams; exceptions use #[expect(..., reason = "...")].
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "start processes via desktop::SystemRunner or the recorder module" },
+    { path = "std::thread::sleep", reason = "sleep via desktop::Runner so test fakes can control time" },
+    { path = "std::env::var", reason = "take configuration as command-line arguments" },
+    { path = "std::env::var_os", reason = "take configuration as command-line arguments" },
+]

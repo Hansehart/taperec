@@ -1,0 +1,54 @@
+name: release
+
+# Publishes the macOS binaries for a version tag and points its major tag at it.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Match the tag to Cargo.toml
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          source action/main.sh
+          version=$(crate_version Cargo.toml)
+          [ "$TAG" = "v$version" ] || bail "tag $TAG names a version other than Cargo.toml's $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build and package
+        run: |
+          source action/main.sh
+          asset=$(asset_name "$VERSION")
+          mkdir -p dist
+          build_from_source "$PWD" dist
+          cp LICENSE dist/
+          tar -czf "$asset" -C dist taperec taperec-caption LICENSE
+          shasum -a 256 "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" "$ASSET" "$ASSET.sha256" --verify-tag --title "$TAG" --generate-notes
+
+      - name: Point the major tag at this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          major=${TAG%%.*}
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" -f sha="$GITHUB_SHA" -F force=true ||
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$major" -f sha="$GITHUB_SHA"

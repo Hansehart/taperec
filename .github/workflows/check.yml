@@ -1,0 +1,32 @@
+name: check
+
+# Runs the pre-commit hooks and the minimum Rust version check.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: pre-commit
+        env:
+          # CI also runs on main itself; the hook guards local commits.
+          SKIP: no-commit-to-branch
+        run: pipx run pre-commit==4.6.2 run --all-files --show-diff-on-failure
+
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: ./msrv.sh
