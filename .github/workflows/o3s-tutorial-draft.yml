@@ -23,12 +23,15 @@ jobs:
           mkdir -p "$HOME/Library/Application Support/Code/User"
           cp config/Code/User/settings.json "$HOME/Library/Application Support/Code/User/settings.json"
 
-      - id: render
-        uses: $/
-        with:
-          tapes: tutorials/o3s-draft.tape
-          dock: Terminal
-          from-source: true
+      # Calls the action's script directly; its Apple silicon guard is the only part tied to arm64.
+      - name: Record
+        env:
+          INPUT_TAPES: tutorials/o3s-draft.tape
+          INPUT_OUT_DIR: taperec
+          INPUT_DOCK: Terminal
+          INPUT_FROM_SOURCE: "true"
+          GITHUB_ACTION_PATH: ${{ github.workspace }}
+        run: RUNNER_ARCH=ARM64 bash --noprofile --norc action/main.sh
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
