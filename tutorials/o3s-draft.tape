@@ -3,6 +3,8 @@ Output o3s.mp4
 Set MoveDuration 700ms
 Set TypingSpeed 35ms
 
+# The Dock restarts during setup; wait until it lists its icons again.
+WaitUntil "osascript -e 'tell application \"System Events\" to count UI elements of list 1 of process \"Dock\"'" 2m
 Sleep 1.5s
 Click dock:Terminal
 WaitWindow "sh" 30s
