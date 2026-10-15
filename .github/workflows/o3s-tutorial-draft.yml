@@ -1,0 +1,38 @@
+name: o3s tutorial draft
+
+# Records the o3s getting-started draft on the newest Intel Mac, which runs Docker Desktop.
+on:
+  push:
+    branches: [tutorial/o3s-draft]
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: macos-26-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      # Quiet VS Code from its first start: no welcome page, trust prompt or chat panel.
+      - name: VS Code settings
+        run: |
+          mkdir -p "$HOME/Library/Application Support/Code/User"
+          cp config/Code/User/settings.json "$HOME/Library/Application Support/Code/User/settings.json"
+
+      - id: render
+        uses: $/
+        with:
+          tapes: tutorials/o3s-draft.tape
+          dock: Terminal
+          from-source: true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: o3s-tutorial-draft
+          path: taperec/
+          if-no-files-found: warn
