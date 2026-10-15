@@ -4,12 +4,14 @@ name: o3s tutorial draft
 on:
   push:
     branches: [tutorial/o3s-draft]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   record:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-26-intel
     timeout-minutes: 90
     steps:
@@ -40,13 +42,18 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Separates the Dock restart from the rewritten app list as the cause of the missing Dock on Intel.
+  # Finds which Dock list format the restarted Dock accepts on Intel, with Apple silicon as control.
   dock-diag:
     strategy:
       fail-fast: false
       matrix:
-        variant: [restart-only, rewrite-kickstart, rewrite-only]
-    runs-on: macos-26-intel
+        include:
+          - { runner: macos-26-intel, variant: full-format }
+          - { runner: macos-26-intel, variant: full-append }
+          - { runner: macos-26-intel, variant: minimal-append }
+          - { runner: macos-26-intel, variant: clear-only }
+          - { runner: macos-26, variant: minimal-arm }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     env:
       VARIANT: ${{ matrix.variant }}
@@ -55,27 +62,31 @@ jobs:
         shell: bash {0}
         run: |
           mkdir -p out
+          minimal='<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/System/Applications/Utilities/Terminal.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>'
+          full='<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file:///System/Applications/Utilities/Terminal.app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Terminal</string></dict><key>tile-type</key><string>file-tile</string></dict>'
           state() {
             echo "### $1"
             pgrep -lx Dock || echo "no Dock process"
-            osascript -e 'tell application "System Events" to count UI elements of list 1 of process "Dock"' 2>&1
+            osascript -e 'tell application "System Events" to get name of every UI element of list 1 of process "Dock"' 2>&1
             screencapture -x "out/$1.png"
           }
+          defaults read com.apple.dock persistent-apps > out/native-persistent-apps.txt 2>&1
+          sw_vers > out/machine.txt; uname -m >> out/machine.txt
           state 0-untouched
-          if [ "$VARIANT" != restart-only ]; then
-            defaults write com.apple.dock persistent-apps -array
-            defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/System/Applications/Utilities/Terminal.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>'
-          fi
           case "$VARIANT" in
-            restart-only) killall Dock ;;
-            rewrite-kickstart) launchctl kickstart -k "gui/$(id -u)/com.apple.Dock.agent" ;;
+            full-format) defaults write com.apple.dock persistent-apps -array; defaults write com.apple.dock persistent-apps -array-add "$full" ;;
+            full-append) defaults write com.apple.dock persistent-apps -array-add "$full" ;;
+            minimal-append) defaults write com.apple.dock persistent-apps -array-add "$minimal" ;;
+            clear-only) defaults write com.apple.dock persistent-apps -array ;;
+            minimal-arm) defaults write com.apple.dock persistent-apps -array; defaults write com.apple.dock persistent-apps -array-add "$minimal" ;;
           esac
+          defaults read com.apple.dock persistent-apps > out/written-persistent-apps.txt 2>&1
+          killall Dock
           sleep 5
           state 1-after-5s
           sleep 25
           state 2-after-30s
-          log show --last 3m --style compact --predicate 'process == "Dock"' > out/dock-log.txt 2>&1
-          grep -iE 'error|fail|crash|denied|timeout' out/dock-log.txt | head -40
+          log show --last 2m --style compact --predicate 'process == "Dock"' > out/dock-log.txt 2>&1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
