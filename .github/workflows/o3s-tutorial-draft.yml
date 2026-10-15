@@ -40,42 +40,44 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Repeats the action's desktop setup one step at a time to find what removes the Dock on Intel.
+  # Separates the Dock restart from the rewritten app list as the cause of the missing Dock on Intel.
   dock-diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [restart-only, rewrite-kickstart, rewrite-only]
     runs-on: macos-26-intel
-    timeout-minutes: 20
+    timeout-minutes: 15
+    env:
+      VARIANT: ${{ matrix.variant }}
     steps:
-      - name: Tools
-        run: brew install displayplacer ffmpeg
-      - name: Each setup step
+      - name: Dock variant
+        shell: bash {0}
         run: |
           mkdir -p out
           state() {
             echo "### $1"
             pgrep -lx Dock || echo "no Dock process"
             osascript -e 'tell application "System Events" to count UI elements of list 1 of process "Dock"' 2>&1
-            launchctl print "gui/$(id -u)/com.apple.Dock.agent" 2>&1 | grep -E 'state|pid|last exit' | head -4
             screencapture -x "out/$1.png"
           }
           state 0-untouched
-          id=$(displayplacer list | awk '/^Persistent screen id:/ { print $4; exit }')
-          displayplacer "id:$id res:1920x1080 scaling:off"; sleep 3
-          state 1-displayplacer
-          ffmpeg -loglevel error -y -f lavfi -i "gradients=s=1920x1080:c0=0x1e3c72:c1=0x7f53ac" -frames:v 1 "$RUNNER_TEMP/w.png"
-          osascript -e "tell application \"System Events\" to tell every desktop to set picture to POSIX file \"$RUNNER_TEMP/w.png\""; sleep 3
-          state 2-wallpaper
-          defaults write com.apple.dock persistent-apps -array
-          defaults write com.apple.dock show-recents -bool false
-          defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/System/Applications/Utilities/Terminal.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>'
-          killall Dock; sleep 3
-          state 3-dock-reset-3s
-          sleep 30
-          state 4-dock-reset-33s
-          open -a Dock 2>&1 || true; sleep 10
-          state 5-open-dock
-        shell: bash {0}
+          if [ "$VARIANT" != restart-only ]; then
+            defaults write com.apple.dock persistent-apps -array
+            defaults write com.apple.dock persistent-apps -array-add '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/System/Applications/Utilities/Terminal.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>'
+          fi
+          case "$VARIANT" in
+            restart-only) killall Dock ;;
+            rewrite-kickstart) launchctl kickstart -k "gui/$(id -u)/com.apple.Dock.agent" ;;
+          esac
+          sleep 5
+          state 1-after-5s
+          sleep 25
+          state 2-after-30s
+          log show --last 3m --style compact --predicate 'process == "Dock"' > out/dock-log.txt 2>&1
+          grep -iE 'error|fail|crash|denied|timeout' out/dock-log.txt | head -40
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: dock-diag
+          name: dock-diag-${{ matrix.variant }}
           path: out/
