@@ -23,14 +23,20 @@ end describe
 
 set out to ""
 tell application "System Events"
-	repeat with p in (every process whose (count of windows) > 0)
-		set out to out & "process " & (name of p) & " frontmost " & (frontmost of p) & " background " & (background only of p) & linefeed
-		repeat with w in windows of p
-			set {x, y} to position of w
-			set {ww, hh} to size of w
-			set out to out & " window " & quoted form of ((name of w) as text) & " role " & (subrole of w as text) & " at " & x & "," & y & " size " & ww & "x" & hh & linefeed
-			set out to out & my describe(w, 1)
-		end repeat
+	repeat with p in every process
+		try
+			if (count of windows of p) > 0 then
+				set out to out & "process " & (name of p) & " frontmost " & (frontmost of p) & " background " & (background only of p) & linefeed
+				repeat with w in windows of p
+					try
+						set {x, y} to position of w
+						set {ww, hh} to size of w
+						set out to out & " window " & quoted form of ((name of w) as text) & " role " & ((subrole of w) as text) & " at " & x & "," & y & " size " & ww & "x" & hh & linefeed
+						set out to out & my describe(w, 1)
+					end try
+				end repeat
+			end if
+		end try
 	end repeat
 end tell
 return out
