@@ -26,6 +26,6 @@ jobs:
 | `dock` | (empty) | Apps the Dock shows, one name per line |
 | `from-source` | `false` | Build taperec from the action's source instead of its release |
 
-The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. Pin it to a release tag or commit SHA.
+The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon), downloads the release binaries matching its version and verifies their SHA-256. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 
 Contributing: run `pre-commit install`, work on a branch, and write commits as `type(scope): subject` with a scope from `.commitlintrc.json`.

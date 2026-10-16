@@ -62,7 +62,7 @@ verify_sha256() {
 
 # Installs the tools taperec drives the desktop and encodes video with.
 install_tools() {
-    brew install ffmpeg cliclick displayplacer
+    HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg cliclick displayplacer
     brew list --versions ffmpeg cliclick displayplacer
 }
 
