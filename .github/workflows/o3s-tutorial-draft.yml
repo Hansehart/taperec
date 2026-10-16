@@ -51,6 +51,7 @@ jobs:
 
   # Types the draft's long commands through taperec while it records, three runs per runner.
   typing-probe:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -76,3 +77,28 @@ jobs:
           path: |
             taperec/
             /tmp/typed.txt
+
+  # Types with keys held for a while versus released at once, under a real recording.
+  typer-probe:
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        hold: [0, 15]
+        replica: [1, 2, 3, 4, 5, 6]
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    env:
+      TYPER_HOLD: ${{ matrix.hold }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Build the typer
+        run: swiftc -O .github/scripts/typer.swift -o "$RUNNER_TEMP/typer"
+      - uses: $/
+        with:
+          tapes: tutorials/typer-probe.tape
+          from-source: "true"
+      - name: Compare typed lines
+        run: .github/scripts/typed-check.sh

@@ -30,7 +30,9 @@ Click 1019,409
 Sleep 1.5s
 Click 1188,343
 Sleep 2s
-# Back to Terminal, the part of its window Docker Desktop leaves visible.
+# Hide Docker Desktop and carry on in Terminal.
+Key cmd+h
+Sleep 1s
 Click 180,300
 Sleep 1s
 Key cmd+k
@@ -54,6 +56,9 @@ Key return
 # macOS asks once before opening an app downloaded from the internet.
 WaitUntil "osascript -e 'tell application \"System Events\" to exists window 1 of process \"CoreServicesUIAgent\"' | grep -q true" 3m
 Sleep 1.5s
+# The first click brings the dialog forward, the second presses Open.
+Click 1019,447
+Sleep 1s
 Click 1019,447
 WaitWindow "o3s" 3m
 Sleep 3s
