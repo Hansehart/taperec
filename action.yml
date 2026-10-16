@@ -27,6 +27,27 @@ outputs:
 runs:
   using: composite
   steps:
+    # Keys the caches of taperec's own tooling; what a tape demonstrates is never cached.
+    - id: keys
+      shell: bash
+      run: |
+        echo "brew=taperec-brew-$RUNNER_OS-$RUNNER_ARCH-$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+        echo "build=taperec-build-$RUNNER_OS-$RUNNER_ARCH-$(cat "$GITHUB_ACTION_PATH"/{Cargo.lock,rust-toolchain.toml,tools/caption.swift} | shasum -a 256 | cut -c 1-16)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/Library/Caches/Homebrew/downloads
+        key: ${{ steps.keys.outputs.brew }}
+        restore-keys: taperec-brew-${{ runner.os }}-${{ runner.arch }}-
+    - if: inputs.from-source == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.rustup/toolchains
+          ~/.cargo/registry
+          ~/.cargo/git
+          ${{ github.action_path }}/target
+        key: ${{ steps.keys.outputs.build }}
+        restore-keys: taperec-build-${{ runner.os }}-${{ runner.arch }}-
     - id: record
       shell: bash
       env:
