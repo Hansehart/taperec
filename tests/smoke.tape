@@ -6,6 +6,7 @@ Set TypingSpeed 40ms
 Sleep 1s
 Click dock:Terminal
 WaitWindow "sh" 30s
+Focus "Terminal"
 Sleep 1s
 # Fails the tape when a lone Return goes missing.
 Type "touch /tmp/taperec-return"
