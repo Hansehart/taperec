@@ -84,8 +84,8 @@ const FOCUS_SCRIPT: &[&str] = &[
     "set appName to item 1 of argv",
     "tell application appName to activate",
     "set wanted to id of application appName",
-    "tell application \"System Events\" to set front to bundle identifier of first process whose frontmost is true",
-    "return wanted is front",
+    "tell application \"System Events\" to set frontId to bundle identifier of first process whose frontmost is true",
+    "return wanted is frontId",
     "end run",
 ];
 
