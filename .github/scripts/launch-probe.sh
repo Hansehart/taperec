@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launches one app after an IconServices treatment and records, for 90 s, whether it and the Dock come up.
-# Usage: launch-probe.sh <app path> <process name> <plain|restart-icons|clear-icons|wait-5m> <out dir>
+# Usage: launch-probe.sh <app path> <process name> <plain|kickstart-agent|asuser|wait-5m> <out dir>
 set -uo pipefail
 
 app=$1 proc=$2 mode=$3 out=$4
@@ -27,18 +27,28 @@ samples() {
 }
 
 { sw_vers; uname -m; uptime; } > "$out/machine.txt"
+# Which launchd session this job and the user's icon agent live in.
+{
+  uid=$(id -u)
+  echo "uid $uid, manager $(launchctl managername)"
+  ps -axo pid,ppid,user,command | grep -E 'Runner\.(Listener|Worker)|loginwindow|iconservices|Dock$' | grep -v grep
+  grep -l -i iconservices /System/Library/LaunchAgents/* /System/Library/LaunchDaemons/* 2>/dev/null
+  plutil -p /System/Library/LaunchAgents/com.apple.iconservices.iconservicesagent.plist 2>&1
+  launchctl print "gui/$uid" 2>&1 | grep -iE 'icon|session|type|state' | head -20
+  launchctl print "gui/$uid/com.apple.iconservices.iconservicesagent" 2>&1 | head -40
+  launchctl print "user/$uid" 2>&1 | grep -iE 'icon|type' | head -10
+} > "$out/session.txt" 2>&1
 sudo ls -la /Library/Caches/com.apple.iconservices.store > "$out/icon-store.txt" 2>&1
 state before
 samples before
 case "$mode" in
   plain) ;;
-  restart-icons) killall iconservicesagent; sudo killall iconservicesd; sleep 5 ;;
-  clear-icons) sudo rm -rf /Library/Caches/com.apple.iconservices.store; killall iconservicesagent; sudo killall iconservicesd; sleep 5 ;;
+  kickstart-agent) launchctl kickstart -k "gui/$(id -u)/com.apple.iconservices.iconservicesagent"; sleep 5 ;;
   wait-5m) sleep 300 ;;
 esac
 state treated
 SECONDS=0
-open -a "$app" &
+if [ "$mode" = asuser ]; then sudo launchctl asuser "$(id -u)" sudo -u "$USER" open -a "$app" & else open -a "$app" & fi
 launcher=$!
 for t in 10 30 60 90; do
   sleep $((t - SECONDS > 0 ? t - SECONDS : 0))

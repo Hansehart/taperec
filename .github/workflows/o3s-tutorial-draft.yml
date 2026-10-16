@@ -42,32 +42,26 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Launches one app per job on Intel after an IconServices treatment, the service stalled app launches wait on.
+  # Launches Terminal per job and records the launchd session its icon agent needs, with Apple silicon as baseline.
   launch-probe:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { probe: terminal-plain, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: plain }
-          - { probe: terminal-restart-icons, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: restart-icons }
-          - { probe: terminal-clear-icons, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: clear-icons }
-          - { probe: terminal-wait-5m, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: wait-5m }
-          - { probe: vscode-restart-icons, app: /Applications/Visual Studio Code.app, proc: Code, mode: restart-icons }
-    runs-on: macos-26-intel
+          - { probe: intel-plain, runner: macos-26-intel, mode: plain }
+          - { probe: intel-kickstart-agent, runner: macos-26-intel, mode: kickstart-agent }
+          - { probe: intel-asuser, runner: macos-26-intel, mode: asuser }
+          - { probe: arm-plain, runner: macos-26, mode: plain }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
-      APP: ${{ matrix.app }}
-      PROC: ${{ matrix.proc }}
+      APP: /System/Applications/Utilities/Terminal.app
+      PROC: Terminal
       MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Install VS Code
-        if: startsWith(matrix.probe, 'vscode')
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: brew install --cask visual-studio-code
       - name: Launch probe
         timeout-minutes: 14
         run: .github/scripts/launch-probe.sh "$APP" "$PROC" "$MODE" out
@@ -77,27 +71,3 @@ jobs:
           name: launch-probe-${{ matrix.probe }}
           path: out/
 
-  # Builds the release assets of the Intel support branch the way release.yml does.
-  cross-build:
-    runs-on: macos-26
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          ref: feat/action-intel
-          persist-credentials: false
-      - name: Build and package
-        run: |
-          source action/main.sh
-          for arch in ARM64 X64; do
-            target=$(target_triple "$arch")
-            asset=$(asset_name 0.0.0 "$target")
-            rm -rf dist && mkdir -p dist
-            build_from_source "$PWD" "$target" dist
-            file dist/taperec dist/taperec-caption
-            tar -czf "$asset" -C dist taperec taperec-caption
-          done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: cross-build
-          path: taperec-*.tar.gz
