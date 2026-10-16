@@ -15,7 +15,7 @@ case $1 in
   2-vscode) stages=(docker) ;;
   *) stages=(docker vscode clone) ;;
 esac
-for stage in "${stages[@]}"; do
+for stage in ${stages[@]+"${stages[@]}"}; do
   case $stage in
     docker)
       # Refreshes the cached image only when Docker publishes a newer one.
