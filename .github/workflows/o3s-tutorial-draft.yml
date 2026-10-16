@@ -1,19 +1,37 @@
 name: o3s tutorial draft
 
-# Records the o3s getting-started draft on the newest Intel Mac, which runs Docker Desktop.
+# Records the o3s getting-started draft on Intel Macs, which run Docker Desktop: each section on its own, or the whole tape.
 on:
   push:
     branches: [tutorial/o3s-draft]
   workflow_dispatch:
+    inputs:
+      run:
+        description: What to record
+        type: choice
+        options: [sections, full, typer]
+        default: sections
 
 permissions:
   contents: read
 
 jobs:
-  record:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-26-intel
-    timeout-minutes: 90
+  # Each section starts from what the earlier ones show, prepared off camera, so it can be tried in minutes.
+  section:
+    if: github.event_name == 'push' || inputs.run == 'sections'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { section: 1-docker, setup: "", runner: macos-26-intel }
+          - { section: 1-docker, setup: "", runner: macos-26-large }
+          - { section: 2-vscode, setup: docker, runner: macos-26-intel }
+          - { section: 3-cage, setup: docker vscode clone, runner: macos-26-intel }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      SECTION: ${{ matrix.section }}
+      SETUP: ${{ matrix.setup }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -25,23 +43,52 @@ jobs:
           mkdir -p "$HOME/Library/Application Support/Code/User"
           cp config/Code/User/settings.json "$HOME/Library/Application Support/Code/User/settings.json"
 
+      - name: Prepare earlier sections
+        if: matrix.setup != ''
+        timeout-minutes: 20
+        run: .github/scripts/o3s-setup.sh "$SETUP"
+
+      # A screenshot every 10 s shows what happened between the tape's steps.
+      - name: Screenshots
+        run: nohup .github/scripts/screenshots.sh taperec/shots > /dev/null 2>&1 &
+
       - uses: $/
         with:
-          tapes: tutorials/o3s-draft.tape
+          tapes: tutorials/o3s/${{ matrix.section }}.tape
           dock: Terminal
           from-source: "true"
 
-      # Keeps Docker Desktop's own view of a start that never got ready.
       - name: Docker Desktop diagnostics
         if: failure()
         run: |
           mkdir -p taperec/docker
           pgrep -lf -i docker > taperec/docker/processes.txt 2>&1 || true
-          perl -e 'alarm 30; exec @ARGV' /Applications/Docker.app/Contents/Resources/bin/docker desktop status > taperec/docker/status.txt 2>&1 || true
           cp -R "$HOME/Library/Containers/com.docker.docker/Data/log" taperec/docker/ 2>/dev/null || true
-          log show --last 30m --style compact --predicate 'process CONTAINS[c] "docker"' > taperec/docker/unified.log 2>&1 || true
-          screencapture -x taperec/docker/screen.png || true
 
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: o3s-${{ matrix.section }}-${{ matrix.runner }}
+          path: taperec/
+          if-no-files-found: warn
+
+  record:
+    if: inputs.run == 'full'
+    runs-on: macos-26-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: VS Code settings
+        run: |
+          mkdir -p "$HOME/Library/Application Support/Code/User"
+          cp config/Code/User/settings.json "$HOME/Library/Application Support/Code/User/settings.json"
+      - uses: $/
+        with:
+          tapes: tutorials/o3s-draft.tape
+          dock: Terminal
+          from-source: "true"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -49,38 +96,9 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Types the draft's long commands through taperec while it records, three runs per runner.
-  typing-probe:
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-26-intel]
-        replica: [1, 2, 3, 4, 5, 6]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: $/
-        with:
-          tapes: tutorials/typing-probe.tape
-          dock: Terminal
-          from-source: "true"
-      - name: Compare typed lines
-        run: .github/scripts/typed-check.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: typing-probe-${{ matrix.runner }}-${{ matrix.replica }}
-          path: |
-            taperec/
-            /tmp/typed.txt
-
   # Types with keys held for a while versus released at once, under a real recording.
   typer-probe:
-    if: github.event_name == 'push'
+    if: inputs.run == 'typer'
     strategy:
       fail-fast: false
       matrix:
