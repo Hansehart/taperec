@@ -9,7 +9,7 @@ on:
       run:
         description: What to record
         type: choice
-        options: [sections, full, typer]
+        options: [sections, full, typer, gatekeeper]
         default: sections
 
 permissions:
@@ -119,3 +119,21 @@ jobs:
           from-source: "true"
       - name: Compare typed lines
         run: .github/scripts/typed-check.sh
+
+  # Tries each way of pressing Open on the first-launch prompt of a downloaded app.
+  gatekeeper-probe:
+    if: inputs.run == 'gatekeeper'
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Gatekeeper probe
+        timeout-minutes: 15
+        run: .github/scripts/gatekeeper-probe.sh out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: gatekeeper-probe
+          path: out/
