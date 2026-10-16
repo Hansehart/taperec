@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Prepares, off camera, what earlier o3s sections show: docker, vscode, clone, in that order.
-# Usage: o3s-setup.sh "<stage> ..."
+# Prepares, off camera, what the sections before the given one show.
+# Usage: o3s-setup.sh <section>
 set -euo pipefail
 
 # App launches stall while the Intel image's icon agent crash-loops; switch it off first, as the action does.
@@ -10,7 +10,11 @@ if [ "$(uname -m)" = x86_64 ]; then icon_agent_off; fi
 
 docker=/Applications/Docker.app/Contents/Resources/bin/docker
 code="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-read -ra stages <<<"$1"
+case $1 in
+  1-docker) stages=() ;;
+  2-vscode) stages=(docker) ;;
+  *) stages=(docker vscode clone) ;;
+esac
 for stage in "${stages[@]}"; do
   case $stage in
     docker)

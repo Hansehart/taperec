@@ -14,7 +14,8 @@ Sleep 800ms
 Key return
 Warp "Building the cage" 5s
 WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker top \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" | grep -q vscode-server" 30m
-Sleep 15s
+# VS Code finishes connecting a while after its server starts in the cage.
+Sleep 3m
 EndWarp
 Sleep 2s
 Key ctrl+`

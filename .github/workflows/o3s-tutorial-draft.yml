@@ -9,6 +9,9 @@ on:
         type: choice
         options: [sections, full, typer, gatekeeper]
         default: sections
+      sections:
+        description: Sections to record, a JSON list
+        default: '["1-docker", "2-vscode", "3-cage"]'
 
 permissions:
   contents: read
@@ -25,15 +28,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { section: 1-docker, setup: "", runner: macos-26-intel }
-          - { section: 2-vscode, setup: docker, runner: macos-26-intel }
-          - { section: 3-cage, setup: docker vscode clone, runner: macos-26-intel }
-    runs-on: ${{ matrix.runner }}
+        section: ${{ fromJSON(inputs.sections) }}
+    runs-on: macos-26-intel
     timeout-minutes: 45
     env:
       SECTION: ${{ matrix.section }}
-      SETUP: ${{ matrix.setup }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -47,7 +46,7 @@ jobs:
 
       # Only the downloads behind the off-camera setup; what a section shows stays fresh.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: matrix.setup != ''
+        if: matrix.section != '1-docker'
         with:
           path: |
             ~/o3s-downloads
@@ -55,9 +54,8 @@ jobs:
           key: o3s-setup-downloads-${{ runner.arch }}
 
       - name: Prepare earlier sections
-        if: matrix.setup != ''
         timeout-minutes: 20
-        run: .github/scripts/o3s-setup.sh "$SETUP"
+        run: .github/scripts/o3s-setup.sh "$SECTION"
 
       # A screenshot every 10 s shows what happened between the tape's steps.
       - name: Screenshots
@@ -69,17 +67,14 @@ jobs:
           dock: Terminal
           from-source: "true"
 
-      - name: Docker Desktop diagnostics
-        if: failure()
-        run: |
-          mkdir -p taperec/docker
-          pgrep -lf -i docker > taperec/docker/processes.txt 2>&1 || true
-          cp -R "$HOME/Library/Containers/com.docker.docker/Data/log" taperec/docker/ 2>/dev/null || true
+      - name: Diagnostics
+        if: always()
+        run: .github/scripts/o3s-diagnostics.sh taperec/diagnostics
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: o3s-${{ matrix.section }}-${{ matrix.runner }}
+          name: o3s-${{ matrix.section }}
           path: taperec/
           if-no-files-found: warn
 
