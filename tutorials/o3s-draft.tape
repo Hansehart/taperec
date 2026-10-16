@@ -24,6 +24,15 @@ Key return
 Warp "Starting Docker" 2s
 WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker info" 10m
 EndWarp
+# Docker Desktop greets first-time users: allow local network access and skip the sign-in.
+Sleep 5s
+Click 1019,409
+Sleep 1.5s
+Click 1188,343
+Sleep 2s
+# Back to Terminal, the part of its window Docker Desktop leaves visible.
+Click 180,300
+Sleep 1s
 Key cmd+k
 
 # VS Code and the Dev Containers extension.
