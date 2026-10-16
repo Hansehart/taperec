@@ -14,8 +14,10 @@ read -ra stages <<<"$1"
 for stage in "${stages[@]}"; do
   case $stage in
     docker)
-      curl -fsSLo "$RUNNER_TEMP/Docker.dmg" https://desktop.docker.com/mac/main/amd64/Docker.dmg
-      sudo hdiutil attach -quiet "$RUNNER_TEMP/Docker.dmg"
+      # Refreshes the cached image only when Docker publishes a newer one.
+      mkdir -p "$HOME/o3s-downloads"
+      curl -fsSL -z "$HOME/o3s-downloads/Docker.dmg" -o "$HOME/o3s-downloads/Docker.dmg" https://desktop.docker.com/mac/main/amd64/Docker.dmg
+      sudo hdiutil attach -quiet "$HOME/o3s-downloads/Docker.dmg"
       sudo /Volumes/Docker/Docker.app/Contents/MacOS/install --accept-license --user="$USER"
       sudo hdiutil detach -quiet /Volumes/Docker
       # The CLI's start can wrongly report a running Docker Desktop right after installing, so open the app.

@@ -2,8 +2,6 @@ name: o3s tutorial draft
 
 # Records the o3s getting-started draft on Intel Macs, which run Docker Desktop: each section on its own, or the whole tape.
 on:
-  push:
-    branches: [tutorial/o3s-draft]
   workflow_dispatch:
     inputs:
       run:
@@ -15,10 +13,15 @@ on:
 permissions:
   contents: read
 
+# A newer run of the same kind replaces an older one, so stale runs never hold the account's few Macs.
+concurrency:
+  group: o3s-draft-${{ inputs.run }}
+  cancel-in-progress: true
+
 jobs:
   # Each section starts from what the earlier ones show, prepared off camera, so it can be tried in minutes.
   section:
-    if: github.event_name == 'push' || inputs.run == 'sections'
+    if: inputs.run == 'sections'
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +44,15 @@ jobs:
         run: |
           mkdir -p "$HOME/Library/Application Support/Code/User"
           cp config/Code/User/settings.json "$HOME/Library/Application Support/Code/User/settings.json"
+
+      # Only the downloads behind the off-camera setup; what a section shows stays fresh.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.setup != ''
+        with:
+          path: |
+            ~/o3s-downloads
+            ~/Library/Caches/Homebrew/downloads
+          key: o3s-setup-downloads-${{ runner.arch }}
 
       - name: Prepare earlier sections
         if: matrix.setup != ''
