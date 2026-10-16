@@ -19,11 +19,13 @@ for stage in "${stages[@]}"; do
       sudo /Volumes/Docker/Docker.app/Contents/MacOS/install --accept-license --user="$USER"
       sudo hdiutil detach -quiet /Volumes/Docker
       # The CLI's start can wrongly report a running Docker Desktop right after installing, so open the app.
-      open -a Docker
+      open /Applications/Docker.app
       for _ in $(seq 120); do "$docker" info > /dev/null 2>&1 && break; sleep 5; done
       "$docker" info > /dev/null ;;
     vscode)
-      HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask --no-quarantine visual-studio-code
+      HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask visual-studio-code
+      # Section 2 shows the first-launch prompt; later sections open VS Code without it.
+      xattr -dr com.apple.quarantine "/Applications/Visual Studio Code.app"
       "$code" --install-extension ms-vscode-remote.remote-containers ;;
     clone)
       git clone --depth 1 https://github.com/Hansehart/o3s.git "$HOME/o3s" ;;
