@@ -24,7 +24,6 @@ jobs:
       matrix:
         include:
           - { section: 1-docker, setup: "", runner: macos-26-intel }
-          - { section: 1-docker, setup: "", runner: macos-26-large }
           - { section: 2-vscode, setup: docker, runner: macos-26-intel }
           - { section: 3-cage, setup: docker vscode clone, runner: macos-26-intel }
     runs-on: ${{ matrix.runner }}

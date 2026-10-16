@@ -18,7 +18,10 @@ for stage in "${stages[@]}"; do
       sudo hdiutil attach -quiet "$RUNNER_TEMP/Docker.dmg"
       sudo /Volumes/Docker/Docker.app/Contents/MacOS/install --accept-license --user="$USER"
       sudo hdiutil detach -quiet /Volumes/Docker
-      "$docker" desktop start --timeout 600 ;;
+      # The CLI's start can wrongly report a running Docker Desktop right after installing, so open the app.
+      open -a Docker
+      for _ in $(seq 120); do "$docker" info > /dev/null 2>&1 && break; sleep 5; done
+      "$docker" info > /dev/null ;;
     vscode)
       HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask --no-quarantine visual-studio-code
       "$code" --install-extension ms-vscode-remote.remote-containers ;;

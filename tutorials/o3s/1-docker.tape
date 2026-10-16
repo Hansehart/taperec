@@ -17,7 +17,7 @@ Key return
 Warp "Installing Docker Desktop" 2s
 WaitUntil "test -x /Applications/Docker.app/Contents/Resources/bin/docker && ! test -d /Volumes/Docker" 4m
 EndWarp
-Type "/Applications/Docker.app/Contents/Resources/bin/docker desktop start"
+Type "open -a Docker"
 Key return
 Warp "Starting Docker" 2s
 WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker info" 5m
