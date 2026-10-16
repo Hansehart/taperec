@@ -153,6 +153,10 @@ prepare_desktop() {
         -e 'tell application "System Events" to tell every desktop to set picture to POSIX file (item 1 of argv)' \
         -e 'end run' "$wallpaper"
 
+    # A click on the wallpaper selects it instead of sweeping every window aside.
+    defaults write com.apple.WindowManager EnableStandardClickToShowDesktop -bool false
+    killall WindowManager || true
+
     defaults write com.apple.dock persistent-apps -array
     defaults write com.apple.dock show-recents -bool false
     while IFS= read -r app; do
