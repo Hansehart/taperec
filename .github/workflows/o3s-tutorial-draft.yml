@@ -55,8 +55,11 @@ jobs:
       fail-fast: false
       matrix:
         runner: [macos-26-intel, macos-26]
+        method: [per-char-w20, per-char-w100, one-call, osascript, hid-tap]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 15
+    env:
+      METHOD: ${{ matrix.method }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -66,10 +69,10 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install cliclick
       - name: Typing probe
-        timeout-minutes: 20
-        run: .github/scripts/typing-probe.sh out
+        timeout-minutes: 8
+        run: .github/scripts/typing-probe.sh "$METHOD" out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: typing-probe-${{ matrix.runner }}
+          name: typing-probe-${{ matrix.runner }}-${{ matrix.method }}
           path: out/

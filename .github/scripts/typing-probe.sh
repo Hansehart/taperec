@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Types one line 15 times per method into Terminal while the machine is busy, and counts lines that arrive damaged.
+# Types one line repeatedly with one method into Terminal while the machine is busy, and counts lines that arrive damaged.
+# Usage: typing-probe.sh <method> <out dir>
 set -uo pipefail
 
-out=$1
+method=$1 out=$2
 mkdir -p "$out"
 line="the quick brown fox jumps over 0123456789 lazy dogs curl amd64 --accept-license"
-trials=15
+trials=8
 
 source action/main.sh
 # The action's script stops on the first error; this probe reports and carries on.
@@ -40,7 +41,7 @@ type_line() {
   esac
 }
 
-for method in per-char-w20 per-char-w100 one-call osascript hid-tap; do
+{
   file="$out/typed-$method.txt"
   # Terminal runs a .command file in a new front window, without scripting permission.
   printf '#!/bin/sh\nexec cat > %s\n' "$file" > "$RUNNER_TEMP/$method.command"
@@ -54,6 +55,5 @@ for method in per-char-w20 per-char-w100 one-call osascript hid-tap; do
   bad=$(grep -cvxF "$line" "$file" || true)
   printf '%s\n' "--- $method" >> "$out/damaged.txt"; grep -vxF "$line" "$file" >> "$out/damaged.txt" || true
   printf '%-15s %2d of %d lines damaged, %3ss\n' "$method" "$bad" "$trials" "$SECONDS" | tee -a "$out/summary.txt"
-  sleep 1
-done
+}
 screencapture -x "$out/screen.png"
