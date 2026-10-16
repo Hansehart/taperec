@@ -39,14 +39,17 @@ type_line() {
 
 for method in per-char-w20 per-char-w100 one-call osascript hid-tap; do
   file="$out/typed-$method.txt"
-  osascript -e "tell application \"Terminal\" to do script \"cat > $file\" in window 1" >/dev/null
-  osascript -e 'tell application "Terminal" to activate'
-  sleep 3
+  # Terminal runs a .command file in a new front window, without scripting permission.
+  printf '#!/bin/sh\nexec cat > %s\n' "$file" > "$RUNNER_TEMP/$method.command"
+  chmod +x "$RUNNER_TEMP/$method.command"
+  open -a Terminal "$RUNNER_TEMP/$method.command"
+  sleep 5
   SECONDS=0
   for _ in $(seq "$trials"); do type_line "$method"; sleep 0.5; done
   sleep 2
   pkill -x cat
-  bad=$(grep -cvxF "$line" "$file")
+  bad=$(grep -cvxF "$line" "$file" || true)
+  printf '%s\n' "--- $method" >> "$out/damaged.txt"; grep -vxF "$line" "$file" >> "$out/damaged.txt" || true
   printf '%-15s %2d of %d lines damaged, %3ss\n' "$method" "$bad" "$trials" "$SECONDS" | tee -a "$out/summary.txt"
   sleep 1
 done
