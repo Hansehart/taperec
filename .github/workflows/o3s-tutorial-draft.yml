@@ -41,7 +41,7 @@ jobs:
           log show --last 30m --style compact --predicate 'process CONTAINS[c] "docker"' > taperec/docker/unified.log 2>&1 || true
           screencapture -x taperec/docker/screen.png || true
 
-@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: o3s-tutorial-draft
