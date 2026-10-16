@@ -11,6 +11,10 @@ Sleep 1s
 Type "touch /tmp/taperec-return"
 Key return
 WaitUntil "test -f /tmp/taperec-return" 10s
+# Fails the tape when a typed character goes missing.
+Type "echo the quick brown fox jumps over 0123456789 lazy dogs > /tmp/taperec-typed"
+Key return
+WaitUntil "grep -qx 'the quick brown fox jumps over 0123456789 lazy dogs' /tmp/taperec-typed" 10s
 Type "echo taperec smoke"
 Key return
 Warp "Waiting" 1s

@@ -16,8 +16,8 @@ use crate::units;
 const MOVE_RATE_HZ: u32 = 60;
 /// cliclick's message for a character outside the keyboard layout.
 const UNTYPABLE: &str = "Unable to get key code for";
-/// A pause after a lone key press, which cliclick only delivers when a command follows it.
-const KEY_SETTLE: &str = "w:50";
+/// A pause after each keystroke, which cliclick only delivers when a command follows it.
+const KEY_SETTLE: &str = "w:20";
 /// How often `WaitWindow` polls for its window.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// The longest a step runs between checks that the recording is alive.
@@ -358,7 +358,7 @@ impl<R: Runner> Desktop<R> {
             let output = match c {
                 '\n' => self.cliclick(&["kp:return", KEY_SETTLE])?,
                 '\t' => self.cliclick(&["kp:tab", KEY_SETTLE])?,
-                c => self.cliclick(&[&format!("t:{c}")])?,
+                c => self.cliclick(&[&format!("t:{c}"), KEY_SETTLE])?,
             };
             let detail = output.stderr.trim();
             if detail.contains(UNTYPABLE) {
@@ -714,7 +714,14 @@ mod tests {
     #[test]
     fn types_one_keystroke_at_a_time_at_typing_speed() {
         let fake = play(Fake::default(), "Set TypingSpeed 80ms\nType \"hi!\"").unwrap();
-        assert_eq!(fake.calls, ["cliclick t:h", "cliclick t:i", "cliclick t:!"]);
+        assert_eq!(
+            fake.calls,
+            [
+                "cliclick t:h w:20",
+                "cliclick t:i w:20",
+                "cliclick t:! w:20"
+            ]
+        );
         // Pauses go between keystrokes.
         assert_eq!(fake.slept, Duration::from_millis(160));
     }
@@ -722,7 +729,7 @@ mod tests {
     #[test]
     fn untypable_characters_fail_the_step() {
         let fake = Fake::default().warn(
-            "cliclick t:é",
+            "cliclick t:é w:20",
             "Unable to get key code for é (see https://github.com/BlueM/cliclick)\n",
         );
         let err = play(fake, "Type \"café\"").err();
@@ -734,7 +741,7 @@ mod tests {
 
     #[test]
     fn other_cliclick_warnings_keep_typing() {
-        let fake = Fake::default().warn("cliclick t:a", "cliclick: some unrelated notice\n");
+        let fake = Fake::default().warn("cliclick t:a w:20", "cliclick: some unrelated notice\n");
         assert!(play(fake, "Type \"ab\"").is_ok());
     }
 
@@ -744,10 +751,10 @@ mod tests {
         assert_eq!(
             fake.calls,
             [
-                "cliclick t:a",
-                "cliclick kp:tab w:50",
-                "cliclick t:b",
-                "cliclick kp:return w:50"
+                "cliclick t:a w:20",
+                "cliclick kp:tab w:20",
+                "cliclick t:b w:20",
+                "cliclick kp:return w:20"
             ]
         );
     }
@@ -762,7 +769,7 @@ mod tests {
         assert_eq!(
             fake.calls,
             [
-                "cliclick kp:return w:50",
+                "cliclick kp:return w:20",
                 "cliclick kd:cmd kp:space ku:cmd",
                 "cliclick kd:cmd,shift t:p ku:cmd,shift",
             ]
