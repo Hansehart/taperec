@@ -30,7 +30,18 @@ jobs:
           dock: Terminal
           from-source: "true"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      # Keeps Docker Desktop's own view of a start that never got ready.
+      - name: Docker Desktop diagnostics
+        if: failure()
+        run: |
+          mkdir -p taperec/docker
+          pgrep -lf -i docker > taperec/docker/processes.txt 2>&1 || true
+          perl -e 'alarm 30; exec @ARGV' /Applications/Docker.app/Contents/Resources/bin/docker desktop status > taperec/docker/status.txt 2>&1 || true
+          cp -R "$HOME/Library/Containers/com.docker.docker/Data/log" taperec/docker/ 2>/dev/null || true
+          log show --last 30m --style compact --predicate 'process CONTAINS[c] "docker"' > taperec/docker/unified.log 2>&1 || true
+          screencapture -x taperec/docker/screen.png || true
+
+@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: o3s-tutorial-draft
