@@ -16,6 +16,8 @@ use crate::units;
 const MOVE_RATE_HZ: u32 = 60;
 /// cliclick's message for a character outside the keyboard layout.
 const UNTYPABLE: &str = "Unable to get key code for";
+/// A pause after a lone key press, which cliclick only delivers when a command follows it.
+const KEY_SETTLE: &str = "w:50";
 /// How often `WaitWindow` polls for its window.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// The longest a step runs between checks that the recording is alive.
@@ -353,12 +355,11 @@ impl<R: Runner> Desktop<R> {
         for (i, c) in (0u32..).zip(text.chars()) {
             // Keystroke `i` starts `i` typing delays in.
             self.sleep_until(start, self.typing_delay.saturating_mul(i));
-            let command = match c {
-                '\n' => "kp:return".to_owned(),
-                '\t' => "kp:tab".to_owned(),
-                c => format!("t:{c}"),
+            let output = match c {
+                '\n' => self.cliclick(&["kp:return", KEY_SETTLE])?,
+                '\t' => self.cliclick(&["kp:tab", KEY_SETTLE])?,
+                c => self.cliclick(&[&format!("t:{c}")])?,
             };
-            let output = self.cliclick(&[&command])?;
             let detail = output.stderr.trim();
             if detail.contains(UNTYPABLE) {
                 return Err(Error::Untypable {
@@ -383,7 +384,7 @@ impl<R: Runner> Desktop<R> {
             Key::Char(c) => format!("t:{c}"),
         };
         if modifiers.is_empty() {
-            self.cliclick(&[&key])?;
+            self.cliclick(&[&key, KEY_SETTLE])?;
         } else {
             let (down, up) = (format!("kd:{modifiers}"), format!("ku:{modifiers}"));
             self.cliclick(&[&down, &key, &up])?;
@@ -744,9 +745,9 @@ mod tests {
             fake.calls,
             [
                 "cliclick t:a",
-                "cliclick kp:tab",
+                "cliclick kp:tab w:50",
                 "cliclick t:b",
-                "cliclick kp:return"
+                "cliclick kp:return w:50"
             ]
         );
     }
@@ -761,7 +762,7 @@ mod tests {
         assert_eq!(
             fake.calls,
             [
-                "cliclick kp:return",
+                "cliclick kp:return w:50",
                 "cliclick kd:cmd kp:space ku:cmd",
                 "cliclick kd:cmd,shift t:p ku:cmd,shift",
             ]

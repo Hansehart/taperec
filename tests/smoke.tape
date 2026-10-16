@@ -7,6 +7,10 @@ Sleep 1s
 Click dock:Terminal
 WaitWindow "sh" 30s
 Sleep 1s
+# Fails the tape when a lone Return goes missing.
+Type "touch /tmp/taperec-return"
+Key return
+WaitUntil "test -f /tmp/taperec-return" 10s
 Type "echo taperec smoke"
 Key return
 Warp "Waiting" 1s

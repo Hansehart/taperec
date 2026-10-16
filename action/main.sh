@@ -24,6 +24,11 @@ target_triple() {
     esac
 }
 
+# Runs a command, stopping it after a number of seconds.
+limited() {
+    perl -e 'alarm shift; exec @ARGV' "$@"
+}
+
 # Prints the files each newline-separated glob matches, in glob order.
 tapes_from() {
     local pattern matches
@@ -102,9 +107,39 @@ app_path() {
     bail "no app named $1"
 }
 
+# Tells whether a target's runners need the icon agent switched off.
+crashing_icon_agent() {
+    [ "$1" = x86_64-apple-darwin ]
+}
+
+# Switches off the per-user icon agent so app launches get a generic icon instead of waiting on it (actions/runner-images#14751).
+icon_agent_off() {
+    local label
+    label="gui/$(id -u)/com.apple.iconservices.iconservicesagent"
+    limited 30 launchctl bootout "$label" || true
+    limited 30 launchctl disable "$label" || bail "could not switch off the icon agent"
+}
+
+# Waits up to a minute for a Dock other than the given pid to list its items, keeping a screenshot when none does.
+wait_for_dock() {
+    local out=$1 old=$2 _
+    for _ in $(seq 60); do
+        if [ "$(pgrep -x Dock)" != "$old" ] && limited 10 osascript -e 'tell application "System Events" to count UI elements of list 1 of process "Dock"' >/dev/null 2>&1; then
+            return
+        fi
+        sleep 1
+    done
+    mkdir -p "$out"
+    screencapture -x "$out/dock-failshot.png" || true
+    bail "the Dock did not come back after restarting"
+}
+
 # Sets a 1920x1080 screen, a gradient wallpaper and a Dock holding exactly the given apps.
 prepare_desktop() {
-    local id bounds wallpaper app
+    local dock=$1 target=$2 out=$3 id bounds wallpaper app old
+    if crashing_icon_agent "$target"; then
+        icon_agent_off
+    fi
     id=$(displayplacer list | awk '/^Persistent screen id:/ { print $4; exit }')
     displayplacer "id:$id res:1920x1080 scaling:off"
     bounds=$(osascript -e 'tell application "Finder" to get bounds of window of desktop')
@@ -124,10 +159,10 @@ prepare_desktop() {
         [ -n "$app" ] || continue
         defaults write com.apple.dock persistent-apps -array-add \
             "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$(app_path "$app")</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
-    done <<<"$1"
+    done <<<"$dock"
+    old=$(pgrep -x Dock)
     killall Dock
-    # The Dock redraws its items within a few seconds of restarting.
-    sleep 3
+    wait_for_dock "$out" "$old"
 }
 
 # Records each tape into a directory and lists the videos as the action's output.
@@ -160,7 +195,7 @@ main() {
     fi
     export PATH="$bin:$PATH"
     taperec --version
-    prepare_desktop "${INPUT_DOCK:-}"
+    prepare_desktop "${INPUT_DOCK:-}" "$target" "${INPUT_OUT_DIR:-taperec}"
     render "${INPUT_OUT_DIR:-taperec}" "$tapes"
 }
 
