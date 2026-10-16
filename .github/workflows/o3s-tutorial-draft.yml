@@ -7,7 +7,7 @@ on:
       run:
         description: What to record
         type: choice
-        options: [sections, full, typer, gatekeeper]
+        options: [sections, full, typer, gatekeeper, wallpaper]
         default: sections
       sections:
         description: Sections to record, a JSON list
@@ -154,4 +154,22 @@ jobs:
         if: always()
         with:
           name: gatekeeper-probe
+          path: out/
+
+  # Checks that switching off click-to-show-desktop keeps windows in place on a stray desktop click.
+  wallpaper-probe:
+    if: inputs.run == 'wallpaper'
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Wallpaper probe
+        timeout-minutes: 10
+        run: .github/scripts/wallpaper-probe.sh out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: wallpaper-probe
           path: out/
