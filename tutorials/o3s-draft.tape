@@ -3,8 +3,6 @@ Output o3s.mp4
 Set MoveDuration 700ms
 Set TypingSpeed 35ms
 
-# The Dock restarts during setup; wait until it lists its icons again.
-WaitUntil "osascript -e 'tell application \"System Events\" to count UI elements of list 1 of process \"Dock\"'" 2m
 Sleep 1.5s
 Click dock:Terminal
 WaitWindow "sh" 30s
@@ -44,6 +42,10 @@ Key cmd+k
 # o3s itself.
 Type "git clone https://github.com/Hansehart/o3s.git && code o3s"
 Key return
+# macOS asks once before opening an app downloaded from the internet.
+WaitUntil "osascript -e 'tell application \"System Events\" to exists window 1 of process \"CoreServicesUIAgent\"' | grep -q true" 3m
+Sleep 1.5s
+Click 1019,447
 WaitWindow "o3s" 3m
 Sleep 3s
 
