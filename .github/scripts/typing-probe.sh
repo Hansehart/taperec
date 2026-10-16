@@ -8,6 +8,9 @@ line="the quick brown fox jumps over 0123456789 lazy dogs curl amd64 --accept-li
 trials=15
 
 source action/main.sh
+# The action's script stops on the first error; this probe reports and carries on.
+set +e
+trap 'echo "line $LINENO failed: $BASH_COMMAND" >&2' ERR
 if [ "$(uname -m)" = x86_64 ]; then icon_agent_off; fi
 swiftc -O .github/scripts/typer.swift -o "$RUNNER_TEMP/typer"
 
