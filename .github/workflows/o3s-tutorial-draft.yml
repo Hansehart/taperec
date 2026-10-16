@@ -42,18 +42,13 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Finds which Dock list format the restarted Dock accepts on Intel, with Apple silicon as control.
+  # Finds the Dock entry the restarted Intel Dock accepts, or a way around rewriting the list.
   dock-diag:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: macos-26-intel, variant: full-format }
-          - { runner: macos-26-intel, variant: full-append }
-          - { runner: macos-26-intel, variant: minimal-append }
-          - { runner: macos-26-intel, variant: clear-only }
-          - { runner: macos-26, variant: minimal-arm }
-    runs-on: ${{ matrix.runner }}
+        variant: [native-subset, ids, bookmark, running-app]
+    runs-on: macos-26-intel
     timeout-minutes: 15
     env:
       VARIANT: ${{ matrix.variant }}
@@ -62,26 +57,55 @@ jobs:
         shell: bash {0}
         run: |
           mkdir -p out
-          minimal='<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/System/Applications/Utilities/Terminal.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>'
-          full='<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file:///System/Applications/Utilities/Terminal.app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Terminal</string></dict><key>tile-type</key><string>file-tile</string></dict>'
+          app=/System/Applications/Utilities/Terminal.app
           state() {
             echo "### $1"
             pgrep -lx Dock || echo "no Dock process"
             osascript -e 'tell application "System Events" to get name of every UI element of list 1 of process "Dock"' 2>&1
             screencapture -x "out/$1.png"
           }
-          defaults read com.apple.dock persistent-apps > out/native-persistent-apps.txt 2>&1
-          sw_vers > out/machine.txt; uname -m >> out/machine.txt
           state 0-untouched
           case "$VARIANT" in
-            full-format) defaults write com.apple.dock persistent-apps -array; defaults write com.apple.dock persistent-apps -array-add "$full" ;;
-            full-append) defaults write com.apple.dock persistent-apps -array-add "$full" ;;
-            minimal-append) defaults write com.apple.dock persistent-apps -array-add "$minimal" ;;
-            clear-only) defaults write com.apple.dock persistent-apps -array ;;
-            minimal-arm) defaults write com.apple.dock persistent-apps -array; defaults write com.apple.dock persistent-apps -array-add "$minimal" ;;
+            native-subset)
+              defaults export com.apple.dock - | python3 -c '
+          import plistlib, sys
+          d = plistlib.loads(sys.stdin.buffer.read())
+          d["persistent-apps"] = [e for e in d["persistent-apps"] if e["tile-data"].get("bundle-identifier") == "com.apple.Safari"]
+          sys.stdout.buffer.write(plistlib.dumps(d))' | defaults import com.apple.dock -
+              ;;
+            ids)
+              defaults write com.apple.dock persistent-apps -array-add "<dict><key>GUID</key><integer>$RANDOM$RANDOM</integer><key>tile-data</key><dict><key>bundle-identifier</key><string>com.apple.Terminal</string><key>file-data</key><dict><key>_CFURLString</key><string>file://$app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Terminal</string><key>file-type</key><integer>41</integer></dict><key>tile-type</key><string>file-tile</string></dict>"
+              ;;
+            bookmark)
+              cat > "$RUNNER_TEMP/add.swift" <<'SWIFT'
+          import Foundation
+          let url = URL(fileURLWithPath: CommandLine.arguments[1])
+          let book = try url.bookmarkData()
+          let tile: [String: Any] = [
+              "tile-type": "file-tile",
+              "tile-data": [
+                  "book": book,
+                  "bundle-identifier": "com.apple.Terminal",
+                  "file-label": "Terminal",
+                  "file-type": 41,
+                  "file-data": ["_CFURLString": url.absoluteString, "_CFURLStringType": 15],
+              ],
+          ]
+          let key = "persistent-apps" as CFString, domain = "com.apple.dock" as CFString
+          var apps = CFPreferencesCopyAppValue(key, domain) as? [Any] ?? []
+          apps.append(tile)
+          CFPreferencesSetAppValue(key, apps as CFArray, domain)
+          print(CFPreferencesAppSynchronize(domain))
+          SWIFT
+              swift "$RUNNER_TEMP/add.swift" "$app" 2>&1 | tail -3
+              ;;
+            running-app)
+              open -a Terminal; sleep 5
+              osascript -e 'tell application "Terminal" to close every window' 2>&1; sleep 2
+              ;;
           esac
           defaults read com.apple.dock persistent-apps > out/written-persistent-apps.txt 2>&1
-          killall Dock
+          [ "$VARIANT" = running-app ] || killall Dock
           sleep 5
           state 1-after-5s
           sleep 25
