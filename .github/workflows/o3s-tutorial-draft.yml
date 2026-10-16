@@ -76,3 +76,28 @@ jobs:
         with:
           name: launch-probe-${{ matrix.probe }}
           path: out/
+
+  # Builds the release assets of the Intel support branch the way release.yml does.
+  cross-build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: feat/action-intel
+          persist-credentials: false
+      - name: Build and package
+        run: |
+          source action/main.sh
+          for arch in ARM64 X64; do
+            target=$(target_triple "$arch")
+            asset=$(asset_name 0.0.0 "$target")
+            rm -rf dist && mkdir -p dist
+            build_from_source "$PWD" "$target" dist
+            file dist/taperec dist/taperec-caption
+            tar -czf "$asset" -C dist taperec taperec-caption
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cross-build
+          path: taperec-*.tar.gz
