@@ -27,22 +27,25 @@ jobs:
           [ "$TAG" = "v$version" ] || bail "tag $TAG names a version other than Cargo.toml's $version"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
+      # Builds the Intel binaries alongside the Apple silicon ones on the same Mac.
       - name: Build and package
         run: |
           source action/main.sh
-          asset=$(asset_name "$VERSION")
-          mkdir -p dist
-          build_from_source "$PWD" dist
-          cp LICENSE dist/
-          tar -czf "$asset" -C dist taperec taperec-caption LICENSE
-          shasum -a 256 "$asset" > "$asset.sha256"
-          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          for arch in ARM64 X64; do
+            target=$(target_triple "$arch")
+            asset=$(asset_name "$VERSION" "$target")
+            rm -rf dist && mkdir -p dist
+            build_from_source "$PWD" "$target" dist
+            cp LICENSE dist/
+            tar -czf "$asset" -C dist taperec taperec-caption LICENSE
+            shasum -a 256 "$asset" > "$asset.sha256"
+          done
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" "$ASSET" "$ASSET.sha256" --verify-tag --title "$TAG" --generate-notes
+        run: gh release create "$TAG" taperec-*.tar.gz taperec-*.tar.gz.sha256 --verify-tag --title "$TAG" --generate-notes
 
       - name: Point the major tag at this release
         env:
