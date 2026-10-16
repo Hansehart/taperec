@@ -127,18 +127,29 @@ jobs:
       - name: Compare typed lines
         run: .github/scripts/typed-check.sh
 
-  # Tries each way of pressing Open on the first-launch prompt of a downloaded app.
+  # Presses Open on the first-launch prompt in five ways, including taperec's own click.
   gatekeeper-probe:
     if: inputs.run == 'gatekeeper'
     runs-on: macos-26-intel
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Gatekeeper probe
-        timeout-minutes: 15
-        run: .github/scripts/gatekeeper-probe.sh out
+      - name: Install VS Code
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install --cask visual-studio-code
+      - uses: $/
+        with:
+          tapes: tutorials/gatekeeper-probe.tape
+          from-source: "true"
+      - name: Results
+        if: always()
+        run: |
+          mkdir -p out
+          cp /tmp/gk-* out/ 2>/dev/null || true
+          cat out/gk-summary.txt || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
