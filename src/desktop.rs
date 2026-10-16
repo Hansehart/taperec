@@ -9,7 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::motion;
-use crate::tape::{DockItem, Key, KeyChord, Point, ShellCommand, Step, Target, WindowName};
+use crate::tape::{
+    AppName, ControlLabel, DockItem, Key, KeyChord, Point, ShellCommand, Step, Target, WindowName,
+};
 use crate::units;
 
 /// Pointer updates per second while gliding.
@@ -39,6 +41,52 @@ const DOCK_SCRIPT: &[&str] = &[
     "end repeat",
     "end tell",
     "return out",
+];
+
+/// Lists the labelled buttons of every window, two groups deep, as
+/// `process<TAB>frontmost<TAB>label<TAB>x<TAB>y<TAB>width<TAB>height`, one per line.
+const CONTROLS_SCRIPT: &[&str] = &[
+    "on controls(e, p, f, depth)",
+    "set out to \"\"",
+    "tell application \"System Events\"",
+    "repeat with b in (buttons of e)",
+    "set n to name of b",
+    "if n is not missing value then",
+    "set {x, y} to position of b",
+    "set {w, h} to size of b",
+    "set out to out & p & tab & f & tab & n & tab & x & tab & y & tab & w & tab & h & linefeed",
+    "end if",
+    "end repeat",
+    "if depth < 3 then",
+    "repeat with g in (groups of e)",
+    "set out to out & my controls(g, p, f, depth + 1)",
+    "end repeat",
+    "end if",
+    "end tell",
+    "return out",
+    "end controls",
+    "set out to \"\"",
+    "tell application \"System Events\" to set ps to every process",
+    "repeat with p in ps",
+    "try",
+    "tell application \"System Events\" to set {appName, f, ws} to {name, frontmost, windows} of p",
+    "repeat with w in ws",
+    "set out to out & my controls(w, appName, f, 1)",
+    "end repeat",
+    "end try",
+    "end repeat",
+    "return out",
+];
+
+/// Brings the app named by the first argument to the front and reports whether it is there.
+const FOCUS_SCRIPT: &[&str] = &[
+    "on run argv",
+    "set appName to item 1 of argv",
+    "tell application appName to activate",
+    "set wanted to id of application appName",
+    "tell application \"System Events\" to set frontId to bundle identifier of first process whose frontmost is true",
+    "return wanted is frontId",
+    "end run",
 ];
 
 /// Lists the named windows of foreground processes, one title per line.
@@ -214,6 +262,17 @@ pub enum Error {
     WindowNotFound(String),
     /// A `WaitUntil` that reached its timeout.
     ConditionNotMet(String),
+    /// A `button:` label that no window showed in time.
+    ControlNotFound(String),
+    /// A `button:` label shown by several apps, none of them frontmost.
+    AmbiguousControl {
+        /// The label.
+        label: String,
+        /// The apps showing it.
+        apps: Vec<String>,
+    },
+    /// A `Focus` app that never came to the front.
+    NotFrontmost(String),
 }
 
 impl fmt::Display for Error {
@@ -239,6 +298,13 @@ impl fmt::Display for Error {
             Self::NotInDock(name) => write!(f, "{name} is not in the Dock"),
             Self::WindowNotFound(name) => write!(f, "no window matching {name:?} appeared"),
             Self::ConditionNotMet(command) => write!(f, "`{command}` never succeeded"),
+            Self::ControlNotFound(label) => write!(f, "no button labelled {label:?} appeared"),
+            Self::AmbiguousControl { label, apps } => write!(
+                f,
+                "a button labelled {label:?} shows in {}; bring one to the front with `Focus`",
+                apps.join(", ")
+            ),
+            Self::NotFrontmost(app) => write!(f, "{app} did not come to the front"),
         }
     }
 }
@@ -281,14 +347,15 @@ impl<R: Runner> Desktop<R> {
             Step::TypingSpeed(delay) => self.typing_delay = *delay,
             Step::MoveDuration(duration) => self.move_duration = *duration,
             Step::Sleep(duration) => self.sleep_while(*duration, alive)?,
-            Step::MoveTo(target) => self.glide(target)?,
+            Step::MoveTo(target) => self.glide(target, alive)?,
             Step::Click(target) => {
-                self.glide(target)?;
+                self.glide(target, alive)?;
                 // `.` is the current position.
                 self.cliclick(&["c:."])?;
             }
             Step::WaitWindow { name, timeout } => self.wait_window(name, *timeout, alive)?,
             Step::WaitUntil { command, timeout } => self.wait_until(command, *timeout, alive)?,
+            Step::Focus { app, timeout } => self.focus(app, *timeout, alive)?,
             // Warps mark the recording; the caller times them.
             Step::Warp { .. } | Step::EndWarp => {}
             Step::Type(text) => self.type_text(text)?,
@@ -393,10 +460,11 @@ impl<R: Runner> Desktop<R> {
     }
 
     /// Moves the pointer to `target` along an eased path at [`MOVE_RATE_HZ`].
-    fn glide(&mut self, target: &Target) -> Result<(), Error> {
+    fn glide(&mut self, target: &Target, alive: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         let to = match target {
             Target::Point(point) => *point,
             Target::Dock(item) => self.dock_point(item)?,
+            Target::Control { label, timeout } => self.control_point(label, *timeout, alive)?,
         };
         let from = self.pointer()?;
         let ticks = self.move_duration.as_millis() * u128::from(MOVE_RATE_HZ) / 1000;
@@ -441,6 +509,60 @@ impl<R: Runner> Desktop<R> {
             .into_iter()
             .find_map(|(name, centre)| (name == item.name()).then_some(centre))
             .ok_or_else(|| Error::NotInDock(item.name().to_owned()))
+    }
+
+    /// Polls until a window shows a button labelled `label`, then returns its centre.
+    ///
+    /// A label shown by several apps resolves to the frontmost one's.
+    fn control_point(
+        &mut self,
+        label: &ControlLabel,
+        timeout: Duration,
+        alive: &mut dyn FnMut() -> bool,
+    ) -> Result<Point, Error> {
+        let args = osascript_args(CONTROLS_SCRIPT);
+        let mut found = None;
+        self.poll(
+            "osascript",
+            &args,
+            POLL_INTERVAL,
+            timeout,
+            alive,
+            |attempt| {
+                let output = attempt?.stdout;
+                let controls = parse_controls(&output).ok_or(Error::UnexpectedOutput {
+                    what: "on-screen buttons",
+                    output: output.clone(),
+                })?;
+                found = pick_control(&controls, label.as_str())?;
+                Ok(found.is_some())
+            },
+        )?;
+        found.ok_or_else(|| Error::ControlNotFound(label.as_str().to_owned()))
+    }
+
+    /// Activates `app` and polls until macOS reports it frontmost.
+    fn focus(
+        &mut self,
+        app: &AppName,
+        timeout: Duration,
+        alive: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let mut args = osascript_args(FOCUS_SCRIPT);
+        args.push(app.as_str());
+        let focused = self.poll(
+            "osascript",
+            &args,
+            POLL_INTERVAL,
+            timeout,
+            alive,
+            |attempt| attempt.map(|output| output.stdout.trim() == "true"),
+        )?;
+        if focused {
+            Ok(())
+        } else {
+            Err(Error::NotFrontmost(app.as_str().to_owned()))
+        }
     }
 
     /// Polls until a foreground window's title contains `name`, ignoring case.
@@ -564,6 +686,66 @@ fn osascript_args<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     lines.iter().flat_map(|line| ["-e", line]).collect()
 }
 
+/// A labelled button as [`CONTROLS_SCRIPT`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Control {
+    app: String,
+    frontmost: bool,
+    label: String,
+    centre: Point,
+}
+
+/// Parses [`CONTROLS_SCRIPT`] output.
+fn parse_controls(text: &str) -> Option<Vec<Control>> {
+    text.lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut fields = line.split('\t');
+            let app = fields.next()?.to_owned();
+            let frontmost = match fields.next()? {
+                "true" => true,
+                "false" => false,
+                _ => return None,
+            };
+            let label = fields.next()?.to_owned();
+            let mut number = || fields.next().and_then(units::natural::<u32>);
+            let (x, y, w, h) = (number()?, number()?, number()?, number()?);
+            if fields.next().is_some() {
+                return None;
+            }
+            let centre = Point {
+                x: x.checked_add(w / 2)?,
+                y: y.checked_add(h / 2)?,
+            };
+            Some(Control {
+                app,
+                frontmost,
+                label,
+                centre,
+            })
+        })
+        .collect()
+}
+
+/// The centre of the button labelled `label`: the frontmost app's, or the only app's showing it.
+fn pick_control(controls: &[Control], label: &str) -> Result<Option<Point>, Error> {
+    let matches: Vec<&Control> = controls.iter().filter(|c| c.label == label).collect();
+    if let Some(front) = matches.iter().find(|c| c.frontmost) {
+        return Ok(Some(front.centre));
+    }
+    let mut apps: Vec<String> = matches.iter().map(|c| c.app.clone()).collect();
+    apps.sort();
+    apps.dedup();
+    match apps.len() {
+        0 => Ok(None),
+        1 => Ok(matches.first().map(|c| c.centre)),
+        _ => Err(Error::AmbiguousControl {
+            label: label.to_owned(),
+            apps,
+        }),
+    }
+}
+
 /// Parses [`DOCK_SCRIPT`] output into names and icon centres.
 fn parse_dock(text: &str) -> Option<Vec<(String, Point)>> {
     text.lines()
@@ -639,14 +821,21 @@ mod tests {
         ) -> Result<Output, Error> {
             // osascript calls are logged by script name.
             let line = if program == "osascript" {
-                let script = if args == osascript_args(DOCK_SCRIPT) {
-                    "dock"
-                } else if args == osascript_args(WINDOWS_SCRIPT) {
-                    "windows"
-                } else {
-                    "unknown"
-                };
-                format!("osascript {script}")
+                let scripts = [
+                    ("dock", DOCK_SCRIPT),
+                    ("windows", WINDOWS_SCRIPT),
+                    ("controls", CONTROLS_SCRIPT),
+                    ("focus", FOCUS_SCRIPT),
+                ];
+                let (name, rest) = scripts
+                    .iter()
+                    .find_map(|(name, script)| {
+                        let script = osascript_args(script);
+                        args.starts_with(&script)
+                            .then(|| (*name, &args[script.len()..]))
+                    })
+                    .unwrap_or(("unknown", &[]));
+                [&["osascript", name][..], rest].concat().join(" ")
             } else {
                 command_line(program, args)
             };
@@ -832,6 +1021,106 @@ mod tests {
             .reply(DOCK, DOCK_ITEMS);
         let fake = play(fake, "MoveTo dock:\"System Settings\"").unwrap();
         assert_eq!(moves(&fake).last(), Some(&"cliclick m:1454,1028"));
+    }
+
+    const CONTROLS: &str = "osascript controls";
+    const FOCUS: &str = "osascript focus";
+    /// The first-launch prompt as accessibility reported it on a macos-26-intel runner.
+    const PROMPT: &str = "CoreServicesUIAgent\tfalse\tCancel\t845\t432\t112\t30\n\
+                          CoreServicesUIAgent\tfalse\tOpen\t963\t432\t112\t30\n";
+
+    #[test]
+    fn buttons_are_clicked_at_their_centre_once_they_appear() {
+        let fake = Fake::default()
+            .reply(POINTER, "0,0\n")
+            .reply(CONTROLS, "")
+            .reply(CONTROLS, PROMPT);
+        let fake = play(fake, "Click button:\"Open\" 5s").unwrap();
+        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1019,447"));
+        assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
+        let polls = fake.calls.iter().filter(|c| *c == CONTROLS).count();
+        assert_eq!(polls, 2);
+    }
+
+    #[test]
+    fn the_frontmost_app_wins_a_shared_label() {
+        let controls =
+            "Docker Desktop\tfalse\tOpen\t0\t0\t10\t10\nCode\ttrue\tOpen\t100\t100\t10\t10\n";
+        let fake = Fake::default()
+            .reply(POINTER, "0,0\n")
+            .reply(CONTROLS, controls);
+        let fake = play(fake, "MoveTo button:\"Open\"").unwrap();
+        assert_eq!(moves(&fake).last(), Some(&"cliclick m:105,105"));
+    }
+
+    #[test]
+    fn a_label_in_several_background_apps_is_ambiguous() {
+        let controls =
+            "Docker Desktop\tfalse\tOpen\t0\t0\t10\t10\nCode\tfalse\tOpen\t100\t100\t10\t10\n";
+        let fake = Fake::default().reply(CONTROLS, controls);
+        let err = play(fake, "Click button:\"Open\"").err();
+        assert_eq!(
+            err,
+            Some(Error::AmbiguousControl {
+                label: "Open".into(),
+                apps: vec!["Code".into(), "Docker Desktop".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_button_that_never_appears_times_out() {
+        let fake = Fake::default().reply(CONTROLS, PROMPT);
+        let err = play(fake, "Click button:\"Allow\" 1s").err();
+        assert_eq!(err, Some(Error::ControlNotFound("Allow".into())));
+    }
+
+    #[test]
+    fn garbled_button_listing_is_an_error() {
+        let fake = Fake::default().reply(CONTROLS, "Code\tmaybe\tOpen\t1\t2\t3\t4\n");
+        let err = play(fake, "Click button:\"Open\"").err();
+        assert!(
+            matches!(
+                err,
+                Some(Error::UnexpectedOutput {
+                    what: "on-screen buttons",
+                    ..
+                })
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn focus_waits_until_the_app_is_in_front() {
+        let fake = Fake::default()
+            .reply(FOCUS, "false\n")
+            .reply(FOCUS, "true\n");
+        let fake = play(fake, "Focus \"Visual Studio Code\"").unwrap();
+        assert_eq!(
+            fake.calls,
+            [
+                "osascript focus Visual Studio Code",
+                "osascript focus Visual Studio Code"
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_fails_when_the_app_stays_behind() {
+        let err = play(Fake::default(), "Focus \"Terminal\" 1s").err();
+        assert_eq!(err, Some(Error::NotFrontmost("Terminal".into())));
+    }
+
+    #[test]
+    fn parses_button_listings() {
+        let controls = parse_controls(PROMPT).unwrap();
+        assert_eq!(controls.len(), 2);
+        assert_eq!(controls[1].label, "Open");
+        assert_eq!(controls[1].centre, Point { x: 1019, y: 447 });
+        assert!(!controls[1].frontmost);
+        assert_eq!(parse_controls(""), Some(vec![]));
+        assert_eq!(parse_controls("a\ttrue\tb\t1\t2\t3"), None);
     }
 
     #[test]
