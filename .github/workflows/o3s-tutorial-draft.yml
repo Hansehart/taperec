@@ -42,77 +42,39 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Finds the Dock entry the restarted Intel Dock accepts, or a way around rewriting the list.
-  dock-diag:
+  # Launches one app per job on Intel to find whether app launching itself stalls there.
+  launch-probe:
     strategy:
       fail-fast: false
       matrix:
-        variant: [native-subset, ids, bookmark, running-app]
+        include:
+          - { probe: terminal, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: open }
+          - { probe: textedit, app: /System/Applications/TextEdit.app, proc: TextEdit, mode: open }
+          - { probe: calculator, app: /System/Applications/Calculator.app, proc: Calculator, mode: open }
+          - { probe: safari, app: /Applications/Safari.app, proc: Safari, mode: open }
+          - { probe: terminal-binary, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: binary }
+          - { probe: terminal-after-dock, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: after-dock }
+          - { probe: vscode, app: /Applications/Visual Studio Code.app, proc: Code, mode: open }
     runs-on: macos-26-intel
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
-      VARIANT: ${{ matrix.variant }}
+      APP: ${{ matrix.app }}
+      PROC: ${{ matrix.proc }}
+      MODE: ${{ matrix.mode }}
     steps:
-      - name: Dock variant
-        shell: bash {0}
-        run: |
-          mkdir -p out
-          app=/System/Applications/Utilities/Terminal.app
-          state() {
-            echo "### $1"
-            pgrep -lx Dock || echo "no Dock process"
-            osascript -e 'tell application "System Events" to get name of every UI element of list 1 of process "Dock"' 2>&1
-            screencapture -x "out/$1.png"
-          }
-          state 0-untouched
-          case "$VARIANT" in
-            native-subset)
-              defaults export com.apple.dock - | python3 -c '
-          import plistlib, sys
-          d = plistlib.loads(sys.stdin.buffer.read())
-          d["persistent-apps"] = [e for e in d["persistent-apps"] if e["tile-data"].get("bundle-identifier") == "com.apple.Safari"]
-          sys.stdout.buffer.write(plistlib.dumps(d))' | defaults import com.apple.dock -
-              ;;
-            ids)
-              defaults write com.apple.dock persistent-apps -array-add "<dict><key>GUID</key><integer>$RANDOM$RANDOM</integer><key>tile-data</key><dict><key>bundle-identifier</key><string>com.apple.Terminal</string><key>file-data</key><dict><key>_CFURLString</key><string>file://$app/</string><key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key><string>Terminal</string><key>file-type</key><integer>41</integer></dict><key>tile-type</key><string>file-tile</string></dict>"
-              ;;
-            bookmark)
-              cat > "$RUNNER_TEMP/add.swift" <<'SWIFT'
-          import Foundation
-          let url = URL(fileURLWithPath: CommandLine.arguments[1])
-          let book = try url.bookmarkData()
-          let tile: [String: Any] = [
-              "tile-type": "file-tile",
-              "tile-data": [
-                  "book": book,
-                  "bundle-identifier": "com.apple.Terminal",
-                  "file-label": "Terminal",
-                  "file-type": 41,
-                  "file-data": ["_CFURLString": url.absoluteString, "_CFURLStringType": 15],
-              ],
-          ]
-          let key = "persistent-apps" as CFString, domain = "com.apple.dock" as CFString
-          var apps = CFPreferencesCopyAppValue(key, domain) as? [Any] ?? []
-          apps.append(tile)
-          CFPreferencesSetAppValue(key, apps as CFArray, domain)
-          print(CFPreferencesAppSynchronize(domain))
-          SWIFT
-              swift "$RUNNER_TEMP/add.swift" "$app" 2>&1 | tail -3
-              ;;
-            running-app)
-              open -a Terminal; sleep 5
-              osascript -e 'tell application "Terminal" to close every window' 2>&1; sleep 2
-              ;;
-          esac
-          defaults read com.apple.dock persistent-apps > out/written-persistent-apps.txt 2>&1
-          [ "$VARIANT" = running-app ] || killall Dock
-          sleep 5
-          state 1-after-5s
-          sleep 25
-          state 2-after-30s
-          log show --last 2m --style compact --predicate 'process == "Dock"' > out/dock-log.txt 2>&1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install VS Code
+        if: matrix.probe == 'vscode'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install --cask visual-studio-code
+      - name: Launch probe
+        timeout-minutes: 8
+        run: .github/scripts/launch-probe.sh "$APP" "$PROC" "$MODE" out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: dock-diag-${{ matrix.variant }}
+          name: launch-probe-${{ matrix.probe }}
           path: out/
