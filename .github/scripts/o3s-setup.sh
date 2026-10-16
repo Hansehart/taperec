@@ -28,11 +28,11 @@ for stage in ${stages[@]+"${stages[@]}"}; do
       open /Applications/Docker.app
       for _ in $(seq 120); do "$docker" info > /dev/null 2>&1 && break; sleep 5; done
       "$docker" info > /dev/null
-      # Dismiss the first-run window as section 1 does, on the screen size the action sets.
-      HOMEBREW_NO_AUTO_UPDATE=1 brew install cliclick displayplacer
-      displayplacer "id:$(displayplacer list | awk '/^Persistent screen id:/ { print $4; exit }') res:1920x1080 scaling:off"
-      sleep 5
-      cliclick c:1019,409 w:1500 c:1188,343 w:2000
+      # Answer the network prompt by its label and hide the welcome window, as section 1 shows.
+      for _ in $(seq 60); do
+        osascript -e 'tell application "System Events" to click button "Allow" of window 1 of process "UserNotificationCenter"' > /dev/null 2>&1 && break
+        sleep 2
+      done
       osascript -e 'tell application "System Events" to set visible of process "Docker Desktop" to false' ;;
     vscode)
       HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask visual-studio-code

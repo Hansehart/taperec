@@ -416,28 +416,24 @@ impl<R: Runner> Desktop<R> {
         self.runner.run("cliclick", commands, None)
     }
 
-    /// Types `text` in a single cliclick run, the typing delay apart, so every keystroke lands before it exits.
+    /// Types `text` one keystroke per cliclick run, paced by the typing delay.
     fn type_text(&mut self, text: &str) -> Result<(), Error> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        let mut commands = vec!["-w".to_owned(), self.typing_delay.as_millis().to_string()];
-        commands.extend(text.chars().map(|c| match c {
-            '\n' => "kp:return".to_owned(),
-            '\t' => "kp:tab".to_owned(),
-            c => format!("t:{c}"),
-        }));
-        commands.push(KEY_SETTLE.to_owned());
-        let args: Vec<&str> = commands.iter().map(String::as_str).collect();
-        let output = self.cliclick(&args)?;
-        let detail = output.stderr.trim();
-        if let Some((_, rest)) = detail.split_once(UNTYPABLE) {
-            // cliclick names the character before its help link.
-            let text = rest.split(" (see").next().unwrap_or(rest).trim();
-            return Err(Error::Untypable {
-                text: text.to_owned(),
-                detail: detail.to_owned(),
-            });
+        let start = self.runner.elapsed();
+        for (i, c) in (0u32..).zip(text.chars()) {
+            // Keystroke `i` starts `i` typing delays in.
+            self.sleep_until(start, self.typing_delay.saturating_mul(i));
+            let output = match c {
+                '\n' => self.cliclick(&["kp:return", KEY_SETTLE])?,
+                '\t' => self.cliclick(&["kp:tab", KEY_SETTLE])?,
+                c => self.cliclick(&[&format!("t:{c}"), KEY_SETTLE])?,
+            };
+            let detail = output.stderr.trim();
+            if detail.contains(UNTYPABLE) {
+                return Err(Error::Untypable {
+                    text: c.to_string(),
+                    detail: detail.to_owned(),
+                });
+            }
         }
         Ok(())
     }
@@ -905,17 +901,24 @@ mod tests {
     }
 
     #[test]
-    fn types_in_one_run_at_typing_speed() {
+    fn types_one_keystroke_at_a_time_at_typing_speed() {
         let fake = play(Fake::default(), "Set TypingSpeed 80ms\nType \"hi!\"").unwrap();
-        assert_eq!(fake.calls, ["cliclick -w 80 t:h t:i t:! w:20"]);
-        // cliclick paces the keystrokes itself.
-        assert_eq!(fake.slept, Duration::ZERO);
+        assert_eq!(
+            fake.calls,
+            [
+                "cliclick t:h w:20",
+                "cliclick t:i w:20",
+                "cliclick t:! w:20"
+            ]
+        );
+        // Pauses go between keystrokes.
+        assert_eq!(fake.slept, Duration::from_millis(160));
     }
 
     #[test]
     fn untypable_characters_fail_the_step() {
         let fake = Fake::default().warn(
-            "cliclick -w 50 t:c t:a t:f t:é w:20",
+            "cliclick t:é w:20",
             "Unable to get key code for é (see https://github.com/BlueM/cliclick)\n",
         );
         let err = play(fake, "Type \"café\"").err();
@@ -927,17 +930,22 @@ mod tests {
 
     #[test]
     fn other_cliclick_warnings_keep_typing() {
-        let fake = Fake::default().warn(
-            "cliclick -w 50 t:a t:b w:20",
-            "cliclick: some unrelated notice\n",
-        );
+        let fake = Fake::default().warn("cliclick t:a w:20", "cliclick: some unrelated notice\n");
         assert!(play(fake, "Type \"ab\"").is_ok());
     }
 
     #[test]
     fn types_newline_and_tab_as_keys() {
         let fake = play(Fake::default(), "Type \"a\\tb\\n\"").unwrap();
-        assert_eq!(fake.calls, ["cliclick -w 50 t:a kp:tab t:b kp:return w:20"]);
+        assert_eq!(
+            fake.calls,
+            [
+                "cliclick t:a w:20",
+                "cliclick kp:tab w:20",
+                "cliclick t:b w:20",
+                "cliclick kp:return w:20"
+            ]
+        );
     }
 
     #[test]
@@ -968,6 +976,17 @@ mod tests {
         // Pointer read, 500 ms of glide, and the last move.
         assert!(fake.clock <= Duration::from_millis(520), "{:?}", fake.clock);
         assert_eq!(moves(&fake).len(), 30);
+    }
+
+    #[test]
+    fn keystrokes_start_typing_speed_apart() {
+        let fake = Fake {
+            run_cost: Duration::from_millis(10),
+            ..Fake::default()
+        };
+        let fake = play(fake, "Set TypingSpeed 80ms\nType \"hi!\"").unwrap();
+        // Keystrokes start at 0, 80 and 160 ms; the last one takes 10 ms.
+        assert_eq!(fake.clock, Duration::from_millis(170));
     }
 
     #[test]

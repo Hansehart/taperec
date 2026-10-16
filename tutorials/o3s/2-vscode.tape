@@ -6,6 +6,7 @@ Set TypingSpeed 35ms
 Sleep 1.5s
 Click dock:Terminal
 WaitWindow "sh" 30s
+Focus "Terminal"
 Sleep 1s
 Type "brew install --cask visual-studio-code"
 Key return
@@ -21,11 +22,6 @@ Key cmd+k
 Type "git clone https://github.com/Hansehart/o3s.git && code o3s"
 Key return
 # macOS asks once before opening an app downloaded from the internet.
-WaitUntil "osascript -e 'tell application \"System Events\" to exists window 1 of process \"CoreServicesUIAgent\"' | grep -q true" 2m
-Sleep 1.5s
-# The first click brings the dialog forward, the second presses Open.
-Click 1019,447
-Sleep 1s
-Click 1019,447
+Click button:"Open" 2m
 WaitWindow "o3s" 2m
 Sleep 3s

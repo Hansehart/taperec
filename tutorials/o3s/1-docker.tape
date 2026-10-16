@@ -22,16 +22,13 @@ Key return
 Warp "Starting Docker" 2s
 WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker info" 5m
 EndWarp
-# Docker Desktop greets first-time users: allow local network access and skip the sign-in.
-Sleep 5s
-Click 1019,409
+# Docker Desktop asks to find devices on the local network.
+Click button:"Allow" 2m
 Sleep 1.5s
-Click 1188,343
-Sleep 2s
-# Hide Docker Desktop and carry on in Terminal.
+# Hide its welcome window and carry on in Terminal.
+Focus "Docker"
 Key cmd+h
-Sleep 1s
-Click 180,300
+Focus "Terminal"
 Sleep 1s
 Key cmd+k
 Type "/Applications/Docker.app/Contents/Resources/bin/docker info --format '{{.ServerVersion}}'"
