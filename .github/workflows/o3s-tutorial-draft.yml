@@ -42,21 +42,19 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Launches one app per job on Intel to find whether app launching itself stalls there.
+  # Launches one app per job on Intel after an IconServices treatment, the service stalled app launches wait on.
   launch-probe:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { probe: terminal, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: open }
-          - { probe: textedit, app: /System/Applications/TextEdit.app, proc: TextEdit, mode: open }
-          - { probe: calculator, app: /System/Applications/Calculator.app, proc: Calculator, mode: open }
-          - { probe: safari, app: /Applications/Safari.app, proc: Safari, mode: open }
-          - { probe: terminal-binary, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: binary }
-          - { probe: terminal-after-dock, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: after-dock }
-          - { probe: vscode, app: /Applications/Visual Studio Code.app, proc: Code, mode: open }
+          - { probe: terminal-plain, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: plain }
+          - { probe: terminal-restart-icons, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: restart-icons }
+          - { probe: terminal-clear-icons, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: clear-icons }
+          - { probe: terminal-wait-5m, app: /System/Applications/Utilities/Terminal.app, proc: Terminal, mode: wait-5m }
+          - { probe: vscode-restart-icons, app: /Applications/Visual Studio Code.app, proc: Code, mode: restart-icons }
     runs-on: macos-26-intel
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       APP: ${{ matrix.app }}
       PROC: ${{ matrix.proc }}
@@ -66,12 +64,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install VS Code
-        if: matrix.probe == 'vscode'
+        if: startsWith(matrix.probe, 'vscode')
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install --cask visual-studio-code
       - name: Launch probe
-        timeout-minutes: 8
+        timeout-minutes: 14
         run: .github/scripts/launch-probe.sh "$APP" "$PROC" "$MODE" out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
