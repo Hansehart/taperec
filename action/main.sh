@@ -10,11 +10,18 @@ bail() {
     exit 1
 }
 
-# Accepts macOS on Apple silicon, the platform taperec drives.
+# Accepts macOS, the platform taperec drives.
 require_mac() {
-    if [ "${RUNNER_OS:-}" != macOS ] || [ "${RUNNER_ARCH:-}" != ARM64 ]; then
-        bail "taperec records macOS on Apple silicon runners, not ${RUNNER_OS:-unknown} ${RUNNER_ARCH:-unknown}"
-    fi
+    [ "${RUNNER_OS:-}" = macOS ] || bail "taperec records on macOS runners, not ${RUNNER_OS:-unknown}"
+}
+
+# Prints the Rust target triple for a runner architecture, e.g. ARM64.
+target_triple() {
+    case "${1:-}" in
+        ARM64) echo aarch64-apple-darwin ;;
+        X64) echo x86_64-apple-darwin ;;
+        *) bail "taperec builds for ARM64 and X64 Macs, not ${1:-unknown}" ;;
+    esac
 }
 
 # Prints the files each newline-separated glob matches, in glob order.
@@ -32,9 +39,9 @@ crate_version() {
     sed -n 's/^version = "\(.*\)"$/\1/p' "$1" | head -n 1
 }
 
-# Prints the release asset name for a version.
+# Prints the release asset name for a version and target triple.
 asset_name() {
-    printf 'taperec-%s-aarch64-apple-darwin.tar.gz\n' "$1"
+    printf 'taperec-%s-%s.tar.gz\n' "$1" "$2"
 }
 
 # Prints a file's SHA-256 with whichever tool the system has.
@@ -59,10 +66,10 @@ install_tools() {
     brew list --versions ffmpeg cliclick displayplacer
 }
 
-# Downloads and verifies the release binaries for a version into a directory.
+# Downloads and verifies the release binaries for a version and target into a directory.
 fetch_binaries() {
-    local version=$1 bin=$2 asset url
-    asset=$(asset_name "$version")
+    local version=$1 target=$2 bin=$3 asset url
+    asset=$(asset_name "$version" "$target")
     url="https://github.com/$REPO/releases/download/v$version"
     for file in "$asset" "$asset.sha256"; do
         curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$RUNNER_TEMP/$file" "$url/$file"
@@ -71,12 +78,16 @@ fetch_binaries() {
     tar -xzf "$RUNNER_TEMP/$asset" -C "$bin" taperec taperec-caption
 }
 
-# Builds the binaries from the action's own source into a directory.
+# Builds the binaries for a target from the action's own source into a directory.
 build_from_source() {
-    local source=$1 bin=$2
-    cargo build --release --locked --manifest-path "$source/Cargo.toml"
-    cp "$source/target/release/taperec" "$bin/"
-    swiftc -O "$source/tools/caption.swift" -o "$bin/taperec-caption"
+    local source=$1 target=$2 bin=$3 arch
+    (cd "$source" && rustup target add "$target")
+    cargo build --release --locked --target "$target" --manifest-path "$source/Cargo.toml"
+    cp "$source/target/$target/release/taperec" "$bin/"
+    arch=${target%%-*}
+    [ "$arch" != aarch64 ] || arch=arm64
+    swiftc -O -target "$arch-apple-macos$(sw_vers -productVersion | cut -d . -f 1)" \
+        "$source/tools/caption.swift" -o "$bin/taperec-caption"
 }
 
 # Prints the path of an installed app by name, e.g. Terminal.
@@ -136,15 +147,16 @@ render() {
 main() {
     require_mac
     [ -n "${INPUT_TAPES:-}" ] || bail "the tapes input is required"
-    local tapes bin
+    local tapes target bin
     tapes=$(tapes_from "$INPUT_TAPES")
+    target=$(target_triple "${RUNNER_ARCH:-}")
     install_tools
     bin="$RUNNER_TEMP/taperec-bin"
     mkdir -p "$bin"
     if [ "${INPUT_FROM_SOURCE:-false}" = true ]; then
-        build_from_source "$GITHUB_ACTION_PATH" "$bin"
+        build_from_source "$GITHUB_ACTION_PATH" "$target" "$bin"
     else
-        fetch_binaries "$(crate_version "$GITHUB_ACTION_PATH/Cargo.toml")" "$bin"
+        fetch_binaries "$(crate_version "$GITHUB_ACTION_PATH/Cargo.toml")" "$target" "$bin"
     fi
     export PATH="$bin:$PATH"
     taperec --version

@@ -38,7 +38,7 @@ $work/intro.tape
 
 printf '[package]\nname = "demo"\nversion = "1.2.3"\nedition = "2021"\n\n[dependencies]\nother = { version = "9.9.9" }\n' > "$work/Cargo.toml"
 check "version comes from the package section" "1.2.3" "$(crate_version "$work/Cargo.toml")"
-check "asset name" "taperec-0.1.0-aarch64-apple-darwin.tar.gz" "$(asset_name 0.1.0)"
+check "asset name" "taperec-0.1.0-x86_64-apple-darwin.tar.gz" "$(asset_name 0.1.0 x86_64-apple-darwin)"
 
 printf 'video' > "$work/asset"
 (cd "$work" && sha256sum asset > asset.sha256)
@@ -47,11 +47,13 @@ printf 'tampered' > "$work/asset"
 check "a tampered file fails" "::error::checksum mismatch for asset" \
     "$( (verify_sha256 "$work/asset" "$work/asset.sha256") 2>&1 || true)"
 
-check "Linux is refused" "::error::taperec records macOS on Apple silicon runners, not Linux X64" \
-    "$( (RUNNER_OS=Linux RUNNER_ARCH=X64 require_mac) 2>&1 || true)"
-check "Intel Macs are refused" "::error::taperec records macOS on Apple silicon runners, not macOS X64" \
-    "$( (RUNNER_OS=macOS RUNNER_ARCH=X64 require_mac) 2>&1 || true)"
-check "Apple silicon passes" "ok" "$(RUNNER_OS=macOS RUNNER_ARCH=ARM64 require_mac && echo ok)"
+check "Linux is refused" "::error::taperec records on macOS runners, not Linux" \
+    "$( (RUNNER_OS=Linux require_mac) 2>&1 || true)"
+check "macOS passes" "ok" "$(RUNNER_OS=macOS require_mac && echo ok)"
+check "Apple silicon target" "aarch64-apple-darwin" "$(target_triple ARM64)"
+check "Intel target" "x86_64-apple-darwin" "$(target_triple X64)"
+check "other architectures are refused" "::error::taperec builds for ARM64 and X64 Macs, not ARM" \
+    "$( (target_triple ARM) 2>&1 || true)"
 
 [ "$failures" -eq 0 ] || { echo "$failures failed"; exit 1; }
 echo "all passed"
