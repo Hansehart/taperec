@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launches one app after an IconServices treatment and records, for 90 s, whether it and the Dock come up.
-# Usage: launch-probe.sh <app path> <process name> <plain|kickstart-agent|asuser|wait-5m> <out dir>
+# Usage: launch-probe.sh <app path> <process name> <plain|bootout> <out dir>
 set -uo pipefail
 
 app=$1 proc=$2 mode=$3 out=$4
@@ -43,12 +43,11 @@ state before
 samples before
 case "$mode" in
   plain) ;;
-  kickstart-agent) launchctl kickstart -k "gui/$(id -u)/com.apple.iconservices.iconservicesagent"; sleep 5 ;;
-  wait-5m) sleep 300 ;;
+  bootout) .github/scripts/icon-agent-off.sh ;;
 esac
 state treated
 SECONDS=0
-if [ "$mode" = asuser ]; then sudo launchctl asuser "$(id -u)" sudo -u "$USER" open -a "$app" & else open -a "$app" & fi
+open -a "$app" &
 launcher=$!
 for t in 10 30 60 90; do
   sleep $((t - SECONDS > 0 ? t - SECONDS : 0))
@@ -56,6 +55,7 @@ for t in 10 30 60 90; do
 done
 if kill -0 "$launcher" 2>/dev/null; then echo "launcher still running after 90 s (pid $launcher)"; fi
 samples after
+ls ~/Library/Logs/DiagnosticReports/ /Library/Logs/DiagnosticReports/ 2>/dev/null | grep -E 'iconservices|Spotlight|dock' > "$out/crash-reports.txt"
 
 sudo log show --last 10m --style compact \
   --predicate "subsystem == \"com.apple.iconservices\" OR process BEGINSWITH \"iconservices\" OR process == \"$proc\" OR process == \"Dock\"" \

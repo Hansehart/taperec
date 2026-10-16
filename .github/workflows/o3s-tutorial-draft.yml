@@ -42,26 +42,30 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Launches Terminal per job and records the launchd session its icon agent needs, with Apple silicon as baseline.
+  # Launches one app per job on Intel with the crash-looping icon agent switched off.
   launch-probe:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { probe: intel-plain, runner: macos-26-intel, mode: plain }
-          - { probe: intel-kickstart-agent, runner: macos-26-intel, mode: kickstart-agent }
-          - { probe: intel-asuser, runner: macos-26-intel, mode: asuser }
-          - { probe: arm-plain, runner: macos-26, mode: plain }
+          - { probe: intel-bootout-terminal, runner: macos-26-intel, mode: bootout, app: /System/Applications/Utilities/Terminal.app, proc: Terminal }
+          - { probe: intel-bootout-textedit, runner: macos-26-intel, mode: bootout, app: /System/Applications/TextEdit.app, proc: TextEdit }
+          - { probe: intel-bootout-vscode, runner: macos-26-intel, mode: bootout, app: /Applications/Visual Studio Code.app, proc: Code }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     env:
-      APP: /System/Applications/Utilities/Terminal.app
-      PROC: Terminal
+      APP: ${{ matrix.app }}
+      PROC: ${{ matrix.proc }}
       MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - name: Install VS Code
+        if: matrix.proc == 'Code'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install --cask visual-studio-code
       - name: Launch probe
         timeout-minutes: 14
         run: .github/scripts/launch-probe.sh "$APP" "$PROC" "$MODE" out
@@ -71,3 +75,28 @@ jobs:
           name: launch-probe-${{ matrix.probe }}
           path: out/
 
+  # Records the smoke tape through the action on Intel with the icon agent switched off.
+  intel-smoke:
+    runs-on: macos-26-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Switch off the icon agent
+        timeout-minutes: 3
+        run: .github/scripts/icon-agent-off.sh
+      - id: render
+        uses: $/
+        with:
+          tapes: tests/smoke.tape
+          dock: Terminal
+          from-source: "true"
+      - name: Verify
+        run: tests/verify-video.sh taperec/smoke.mp4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: intel-smoke
+          path: taperec/
+          if-no-files-found: warn
