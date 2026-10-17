@@ -85,7 +85,8 @@ for round in 1 2 3 4 5; do
 done
 
 echo "dock lists Finder"
-"$helper" dock | cut -f 1 | grep -qxF Finder || fail "no Finder in: $("$helper" dock)"
+dock=$("$helper" dock) || fail "dock failed"
+printf '%s\n' "$dock" | cut -f 1 | grep -qxF Finder || fail "no Finder in: $dock"
 
 echo "an untypable character exits 3"
 status=0

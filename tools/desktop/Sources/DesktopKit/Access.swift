@@ -72,13 +72,29 @@ func collectButtons(in element: AXUIElement, depth: Int, app: String, frontmost:
     }
 }
 
+/// A failed accessibility read, with its AXError code.
+public struct AccessError: Error, CustomStringConvertible {
+    public let what: String, code: Int32
+    public var description: String { "cannot read \(what): AXError \(code)" }
+}
+
+/// Reads `attribute`, failing with the AXError rather than reading as empty.
+func require(_ element: AXUIElement, _ attribute: String, _ what: String) throws -> CFTypeRef {
+    var value: CFTypeRef?
+    let code = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+    guard code == .success, let value else { throw AccessError(what: what, code: code.rawValue) }
+    return value
+}
+
 /// The Dock's items by title and frame.
-func dockItems() -> [(name: String, frame: Frame)] {
+func dockItems() throws -> [(name: String, frame: Frame)] {
     guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first
-    else { return [] }
-    let list = elements(element(of: dock), kAXChildrenAttribute).first { string($0, kAXRoleAttribute) == kAXListRole }
-    guard let list else { return [] }
-    return elements(list, kAXChildrenAttribute).compactMap { item in
+    else { throw AccessError(what: "the Dock, which is not running", code: 0) }
+    let children = try require(element(of: dock), kAXChildrenAttribute, "the Dock") as? [AXUIElement] ?? []
+    guard let list = children.first(where: { string($0, kAXRoleAttribute) == kAXListRole })
+    else { throw AccessError(what: "the Dock's list", code: 0) }
+    let items = try require(list, kAXChildrenAttribute, "the Dock's items") as? [AXUIElement] ?? []
+    return items.compactMap { item in
         guard let name = string(item, kAXTitleAttribute), let frame = frame(item) else { return nil }
         return (name, frame)
     }

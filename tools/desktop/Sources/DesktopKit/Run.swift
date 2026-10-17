@@ -57,7 +57,13 @@ func perform(_ command: Command) -> Exit {
     case .buttons:
         write(formatButtons(onScreenButtons()), to: .standardOutput)
     case .dock:
-        write(formatDock(dockItems()), to: .standardOutput)
+        let started = Date()
+        do {
+            write(formatDock(try dockItems()), to: .standardOutput)
+        } catch {
+            write("\(error) after \(Int(Date().timeIntervalSince(started) * 1000)) ms\n", to: .standardError)
+            return .failed
+        }
     case let .focus(name):
         write(focusApp(named: name) ? "true\n" : "false\n", to: .standardOutput)
     }
