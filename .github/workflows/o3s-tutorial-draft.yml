@@ -18,7 +18,7 @@ permissions:
 
 # A newer run of the same kind replaces an older one, so stale runs never hold the account's few Macs.
 concurrency:
-  group: o3s-draft-${{ inputs.run }}
+  group: o3s-draft-${{ inputs.run }}-${{ inputs.sections }}
   cancel-in-progress: true
 
 jobs:
