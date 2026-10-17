@@ -7,7 +7,7 @@ on:
       run:
         description: What to record
         type: choice
-        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts, clock]
+        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts, clock, mkv]
         default: sections
       sections:
         description: Sections to record, a JSON list
@@ -261,3 +261,16 @@ jobs:
       - name: Clock probe
         timeout-minutes: 10
         run: .github/scripts/clock-probe.sh out
+
+  # Ends Matroska captures with SIGKILL and SIGINT and reports what survived.
+  mkv-probe:
+    if: inputs.run == 'mkv'
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Matroska probe
+        timeout-minutes: 10
+        run: .github/scripts/mkv-probe.sh out
