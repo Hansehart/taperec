@@ -31,10 +31,10 @@ wiggle() {
 report() {
     local file=$1 first=$2
     local start duration frames
-    start=$(limit 30 ffprobe -v error -show_entries format=start_time -of csv=p=0 "$file")
+    start=$(limit 30 ffprobe -v error -show_entries format_tags=com.taperec.start -of csv=p=0 "$file")
     duration=$(limit 30 ffprobe -v error -show_entries format=duration -of csv=p=0 "$file")
     frames=$(limit 60 ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$file")
-    echo "$file: start_time $start (first frame logged at $first, diff $(awk -v a="$start" -v b="$first" 'BEGIN{printf "%.3f", a-b}') s), duration $duration, $frames frames"
+    echo "$file: start tag $start (first frame logged at $first, diff $(awk -v a="$start" -v b="$first" 'BEGIN{printf "%.3f", a-b}') s), duration $duration, $frames frames"
     limit 60 ffmpeg -v error -i "$file" -f null - 2>&1 | head -3 | sed 's/^/  decode: /'
     echo "  decode exit ${PIPESTATUS[0]}"
     limit 60 ffmpeg -v error -y -i "$file" -c copy -avoid_negative_ts make_zero "${file%.mov}-remux.mp4" 2>&1 | head -2
@@ -60,7 +60,7 @@ limit 60 ffmpeg -v error -ss 4 -t 6 -i "$out/clean-remux.mp4" -vf fps=5 "$out/fr
 echo "== SIGKILL after 10 s"
 sleep 60 | "$out/sck-probe" "$out/killed.mov" 60 2> "$out/killed.log" &
 probe=$!
-sleep 10
+sleep 2; wiggle; sleep 2
 kill -9 "$probe"
 echo "killed"
 cat "$out/killed.log"

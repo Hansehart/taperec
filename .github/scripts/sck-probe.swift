@@ -31,6 +31,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var offset: CMTime?
     var started = false
     var complete = 0, skipped = 0, busy = 0, firstLatency = 0.0
+    var last: CMSampleBuffer?
+    var firstPTS = CMTime.zero
 
     init(out: URL) throws {
         try? FileManager.default.removeItem(at: out)
@@ -67,17 +69,29 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         let pts = CMTimeAdd(host, offset!)
         if !started {
+            let tag = AVMutableMetadataItem()
+            tag.keySpace = .quickTimeMetadata
+            tag.key = "com.taperec.start" as NSString
+            tag.value = String(format: "%.6f", pts.seconds) as NSString
+            writer.metadata = [tag]
+            firstPTS = pts
             writer.startWriting()
             writer.startSession(atSourceTime: pts)
             started = true
             log(String(format: "first frame epoch %.6f, %.1f ms after capture", pts.seconds, firstLatency * 1000))
         }
-        guard input.isReadyForMoreMediaData else { busy += 1; return }
+        guard input.isReadyForMoreMediaData else {
+            busy += 1
+            log(String(format: "busy at +%.2f s", CMTimeSubtract(pts, firstPTS).seconds))
+            return
+        }
         var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: pts, decodeTimeStamp: .invalid)
         var retimed: CMSampleBuffer?
         CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: buffer, sampleTimingEntryCount: 1,
                                               sampleTimingArray: &timing, sampleBufferOut: &retimed)
-        if let retimed, !input.append(retimed) {
+        guard let retimed else { return }
+        last = retimed
+        if !input.append(retimed) {
             log("append failed: \(String(describing: writer.error))")
         }
     }
@@ -91,10 +105,18 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.async {
             self.log("frames: \(self.complete) complete, \(self.skipped) skipped, \(self.busy) dropped busy")
             guard self.started else { self.log("no frames"); exit(1) }
-            // The screen may have stood still since the last frame; the file still lasts until now.
+            // The screen may have stood still since the last frame; showing it again makes the file last until now.
             let now = CMTimeAdd(CMClockGetTime(CMClockGetHostTimeClock()), self.offset!)
+            var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: now, decodeTimeStamp: .invalid)
+            var again: CMSampleBuffer?
+            if let last = self.last {
+                CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: last, sampleTimingEntryCount: 1,
+                                                      sampleTimingArray: &timing, sampleBufferOut: &again)
+            }
+            while !self.input.isReadyForMoreMediaData { usleep(10_000) }
+            if let again, !self.input.append(again) { self.log("final append failed") }
+            self.log(String(format: "stopped at +%.2f s", CMTimeSubtract(now, self.firstPTS).seconds))
             self.input.markAsFinished()
-            self.writer.endSession(atSourceTime: now)
             self.writer.finishWriting {
                 self.log("finished: \(self.writer.status.rawValue) \(String(describing: self.writer.error))")
                 exit(self.writer.status == .completed ? 0 : 1)
