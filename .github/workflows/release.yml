@@ -37,7 +37,7 @@ jobs:
             rm -rf dist && mkdir -p dist
             build_from_source "$PWD" "$target" dist
             cp LICENSE dist/
-            tar -czf "$asset" -C dist taperec taperec-caption LICENSE
+            tar -czf "$asset" -C dist taperec taperec-caption taperec-desktop LICENSE
             shasum -a 256 "$asset" > "$asset.sha256"
           done
 

@@ -67,8 +67,8 @@ verify_sha256() {
 
 # Installs the tools taperec drives the desktop and encodes video with.
 install_tools() {
-    HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg cliclick displayplacer
-    brew list --versions ffmpeg cliclick displayplacer
+    HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install ffmpeg displayplacer
+    brew list --versions ffmpeg displayplacer
 }
 
 # Downloads and verifies the release binaries for a version and target into a directory.
@@ -80,7 +80,7 @@ fetch_binaries() {
         curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$RUNNER_TEMP/$file" "$url/$file"
     done
     verify_sha256 "$RUNNER_TEMP/$asset" "$RUNNER_TEMP/$asset.sha256"
-    tar -xzf "$RUNNER_TEMP/$asset" -C "$bin" taperec taperec-caption
+    tar -xzf "$RUNNER_TEMP/$asset" -C "$bin" taperec taperec-caption taperec-desktop
 }
 
 # Builds the binaries for a target from the action's own source into a directory.
@@ -93,6 +93,9 @@ build_from_source() {
     [ "$arch" != aarch64 ] || arch=arm64
     swiftc -O -target "$arch-apple-macos$(sw_vers -productVersion | cut -d . -f 1)" \
         "$source/tools/caption.swift" -o "$bin/taperec-caption"
+    local desktop=(-c release --package-path "$source/tools/desktop" --arch "$arch")
+    swift build "${desktop[@]}"
+    cp "$(swift build "${desktop[@]}" --show-bin-path)/taperec-desktop" "$bin/"
 }
 
 # Prints the path of an installed app by name, e.g. Terminal.
@@ -124,7 +127,7 @@ icon_agent_off() {
 wait_for_dock() {
     local out=$1 old=$2 _
     for _ in $(seq 60); do
-        if [ "$(pgrep -x Dock)" != "$old" ] && limited 10 osascript -e 'tell application "System Events" to count UI elements of list 1 of process "Dock"' >/dev/null 2>&1; then
+        if [ "$(pgrep -x Dock)" != "$old" ] && limited 10 taperec-desktop dock >/dev/null 2>&1; then
             return
         fi
         sleep 1

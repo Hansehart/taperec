@@ -49,7 +49,7 @@ impl DockItem {
     }
 }
 
-/// A modifier held during a chord, by its cliclick `kd:`/`ku:` name.
+/// A modifier held during a chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modifier {
     /// The platform's main shortcut modifier: ⌘ on macOS.
@@ -67,11 +67,12 @@ pub enum Modifier {
 }
 
 impl Modifier {
-    /// The name cliclick's `kd:` and `ku:` take.
+    /// The name tapes write it with.
     #[must_use]
-    pub fn cliclick_name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Primary | Self::Cmd => "cmd",
+            Self::Primary => "primary",
+            Self::Cmd => "cmd",
             Self::Ctrl => "ctrl",
             Self::Alt => "alt",
             Self::Shift => "shift",
@@ -83,9 +84,9 @@ impl Modifier {
 /// The key a chord presses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
-    /// A named key cliclick's `kp:` knows, e.g. `return`.
+    /// A named key, e.g. `return`.
     Named(&'static str),
-    /// A printable ASCII character, typed with `t:`.
+    /// A printable ASCII character.
     Char(char),
 }
 
@@ -107,6 +108,19 @@ impl KeyChord {
     #[must_use]
     pub fn key(&self) -> &Key {
         &self.key
+    }
+}
+
+/// `modifier+...+key`, the way tapes write it.
+impl fmt::Display for KeyChord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for modifier in &self.modifiers {
+            write!(f, "{}+", modifier.name())?;
+        }
+        match self.key {
+            Key::Named(name) => f.write_str(name),
+            Key::Char(c) => write!(f, "{c}"),
+        }
     }
 }
 
@@ -383,7 +397,7 @@ fn duration(value: &str) -> Result<Duration, ValueError> {
         .ok_or_else(bad)
 }
 
-/// Named keys cliclick's `kp:` accepts (`KeyPressAction.m`).
+/// Named keys tapes may press, cliclick's `kp:` names (`KeyPressAction.m`).
 const NAMED_KEYS: [&str; 59] = [
     "return",
     "enter",
@@ -761,7 +775,7 @@ steps:
     }
 
     #[test]
-    fn key_chords_use_cliclick_names() {
+    fn key_chords_parse_modifiers_and_key() {
         let chord =
             |modifiers: Vec<Modifier>, key: Key| vec![Step::Key(KeyChord { modifiers, key })];
         assert_eq!(
@@ -788,7 +802,7 @@ steps:
     }
 
     #[test]
-    fn primary_is_cmd_on_macos() {
+    fn primary_stays_primary_until_the_platform() {
         assert_eq!(
             steps("  - key: primary+shift+p\n"),
             vec![Step::Key(KeyChord {
@@ -796,7 +810,7 @@ steps:
                 key: Key::Char('p'),
             })]
         );
-        assert_eq!(Modifier::Primary.cliclick_name(), "cmd");
+        assert_eq!(Modifier::Primary.name(), "primary");
     }
 
     #[test]
@@ -809,7 +823,17 @@ steps:
             [Modifier::Ctrl, Modifier::Alt, Modifier::Fn]
         );
         assert_eq!(chord.key(), &Key::Named("arrow-left"));
-        assert_eq!(Modifier::Cmd.cliclick_name(), "cmd");
+        assert_eq!(chord.to_string(), "ctrl+alt+fn+arrow-left");
+    }
+
+    #[test]
+    fn the_swift_helper_knows_the_same_named_keys() {
+        let listed = NAMED_KEYS.join("\n") + "\n";
+        assert_eq!(
+            include_str!("../tools/desktop/Tests/DesktopKitTests/named-keys.txt"),
+            listed,
+            "regenerate tools/desktop/Tests/DesktopKitTests/named-keys.txt from NAMED_KEYS"
+        );
     }
 
     #[test]

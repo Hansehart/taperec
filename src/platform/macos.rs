@@ -1,4 +1,4 @@
-//! macOS through `cliclick`, `osascript`, `sh` and `screencapture`.
+//! macOS through the `taperec-desktop` helper, `sh` and `screencapture`.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -6,106 +6,20 @@ use std::time::{Duration, SystemTime};
 use super::{CaptureError, Control, Error, Platform, Recorder};
 use crate::process::{Output, Runner};
 use crate::recorder::{self, Recording};
-use crate::tape::{AppName, Key, KeyChord, Point, ShellCommand};
+use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 use crate::units;
 
-/// cliclick's message for a character outside the keyboard layout.
-const UNTYPABLE: &str = "Unable to get key code for";
-/// A pause after each keystroke, which cliclick only delivers when a command follows it.
-const KEY_SETTLE: &str = "w:20";
+/// The Swift helper that drives input and reads the screen (`tools/desktop`).
+const HELPER: &str = "taperec-desktop";
+/// The helper's exit code for a character outside the keyboard layout.
+const UNTYPABLE: i32 = 3;
 
-/// Lists every named Dock item as `name<TAB>x<TAB>y<TAB>width<TAB>height`, one per line.
-const DOCK_SCRIPT: &[&str] = &[
-    "set out to \"\"",
-    "tell application \"System Events\" to tell process \"Dock\"",
-    "repeat with e in UI elements of list 1",
-    "set n to name of e",
-    "if n is not missing value then",
-    "set {x, y} to position of e",
-    "set {w, h} to size of e",
-    "set out to out & n & tab & x & tab & y & tab & w & tab & h & linefeed",
-    "end if",
-    "end repeat",
-    "end tell",
-    "return out",
-];
-
-/// Lists the labelled buttons of every window, two groups deep, as
-/// `process<TAB>frontmost<TAB>label<TAB>x<TAB>y<TAB>width<TAB>height`, one per line.
-const CONTROLS_SCRIPT: &[&str] = &[
-    "on controls(e, p, f, depth)",
-    "set out to \"\"",
-    "tell application \"System Events\"",
-    "repeat with b in (buttons of e)",
-    "set n to name of b",
-    "if n is not missing value then",
-    "set {x, y} to position of b",
-    "set {w, h} to size of b",
-    "set out to out & p & tab & f & tab & n & tab & x & tab & y & tab & w & tab & h & linefeed",
-    "end if",
-    "end repeat",
-    "if depth < 3 then",
-    "repeat with g in (groups of e)",
-    "set out to out & my controls(g, p, f, depth + 1)",
-    "end repeat",
-    "end if",
-    "end tell",
-    "return out",
-    "end controls",
-    "set out to \"\"",
-    "tell application \"System Events\" to set ps to every process",
-    "repeat with p in ps",
-    "try",
-    "tell application \"System Events\" to set {appName, f, ws} to {name, frontmost, windows} of p",
-    "repeat with w in ws",
-    "set out to out & my controls(w, appName, f, 1)",
-    "end repeat",
-    "end try",
-    "end repeat",
-    "return out",
-];
-
-/// Brings the app named by the first argument to the front and reports whether it is there.
-const FOCUS_SCRIPT: &[&str] = &[
-    "on run argv",
-    "set appName to item 1 of argv",
-    "tell application appName to activate",
-    "set wanted to id of application appName",
-    "tell application \"System Events\" to set frontId to bundle identifier of first process whose frontmost is true",
-    "return wanted is frontId",
-    "end run",
-];
-
-/// Puts the first argument on the clipboard.
-const CLIPBOARD_SCRIPT: &[&str] = &[
-    "on run argv",
-    "set the clipboard to item 1 of argv",
-    "end run",
-];
-
-/// Lists the named windows of foreground processes, one title per line.
-///
-/// A process that comes or goes while the list is read is skipped, so a launching app never fails the wait.
-const WINDOWS_SCRIPT: &[&str] = &[
-    "set out to \"\"",
-    "tell application \"System Events\" to set ps to every process whose background only is false",
-    "repeat with p in ps",
-    "try",
-    "tell application \"System Events\" to set ts to name of every window of p",
-    "repeat with t in ts",
-    "if t is not missing value then set out to out & t & linefeed",
-    "end repeat",
-    "end try",
-    "end repeat",
-    "return out",
-];
-
-/// macOS driven by command-line tools through a [`Runner`].
-pub struct MacScripts<R: Runner> {
+/// macOS driven by the desktop helper and system tools through a [`Runner`].
+pub struct Helper<R: Runner> {
     runner: R,
 }
 
-impl<R: Runner> MacScripts<R> {
+impl<R: Runner> Helper<R> {
     /// macOS through `runner`.
     pub fn new(runner: R) -> Self {
         Self { runner }
@@ -116,23 +30,12 @@ impl<R: Runner> MacScripts<R> {
         self.runner
     }
 
-    fn cliclick(&mut self, commands: &[&str]) -> Result<Output, Error> {
-        self.runner.run("cliclick", commands, None)
-    }
-
-    fn osascript(
-        &mut self,
-        script: &[&str],
-        argument: Option<&str>,
-        limit: Option<Duration>,
-    ) -> Result<Output, Error> {
-        let mut args = osascript_args(script);
-        args.extend(argument);
-        self.runner.run("osascript", &args, limit)
+    fn helper(&mut self, args: &[&str], limit: Option<Duration>) -> Result<Output, Error> {
+        self.runner.run(HELPER, args, limit)
     }
 }
 
-impl<R: Runner> Platform for MacScripts<R> {
+impl<R: Runner> Platform for Helper<R> {
     fn sleep(&mut self, duration: Duration) {
         self.runner.sleep(duration);
     }
@@ -141,10 +44,10 @@ impl<R: Runner> Platform for MacScripts<R> {
         self.runner.elapsed()
     }
 
-    /// Reads the pointer's `x,y` from `cliclick p`.
+    /// Reads the pointer's `x<TAB>y`.
     fn pointer(&mut self) -> Result<Point, Error> {
-        let output = self.cliclick(&["p"])?.stdout;
-        let point = output.trim().split_once(',').and_then(|(x, y)| {
+        let output = self.helper(&["pointer"], None)?.stdout;
+        let point = output.trim_end().split_once('\t').and_then(|(x, y)| {
             Some(Point {
                 x: units::natural(x)?,
                 y: units::natural(y)?,
@@ -157,65 +60,43 @@ impl<R: Runner> Platform for MacScripts<R> {
     }
 
     fn move_to(&mut self, point: Point) -> Result<(), Error> {
-        self.cliclick(&[&format!("m:{},{}", point.x, point.y)])
-            .map(drop)
+        let (x, y) = (point.x.to_string(), point.y.to_string());
+        self.helper(&["move", &x, &y], None).map(drop)
     }
 
     fn click(&mut self) -> Result<(), Error> {
-        // `.` is the current position.
-        self.cliclick(&["c:."]).map(drop)
+        self.helper(&["click"], None).map(drop)
     }
 
-    /// Holds the chord's modifiers, presses its key, and releases them.
     fn key(&mut self, chord: &KeyChord) -> Result<(), Error> {
-        let modifiers = chord
-            .modifiers()
-            .iter()
-            .map(|m| m.cliclick_name())
-            .collect::<Vec<_>>()
-            .join(",");
-        let key = match chord.key() {
-            Key::Named(name) => format!("kp:{name}"),
-            Key::Char(c) => format!("t:{c}"),
-        };
-        if modifiers.is_empty() {
-            self.cliclick(&[&key, KEY_SETTLE])?;
-        } else {
-            let (down, up) = (format!("kd:{modifiers}"), format!("ku:{modifiers}"));
-            self.cliclick(&[&down, &key, &up])?;
-        }
-        Ok(())
+        self.helper(&["key", &chord.to_string()], None).map(drop)
     }
 
     fn type_char(&mut self, c: char) -> Result<(), Error> {
-        let output = match c {
-            '\n' => self.cliclick(&["kp:return", KEY_SETTLE])?,
-            '\t' => self.cliclick(&["kp:tab", KEY_SETTLE])?,
-            c => self.cliclick(&[&format!("t:{c}"), KEY_SETTLE])?,
-        };
-        let detail = output.stderr.trim();
-        if detail.contains(UNTYPABLE) {
-            return Err(Error::Untypable {
+        match self.helper(&["type", c.encode_utf8(&mut [0; 4])], None) {
+            Err(Error::Exit {
+                code: Some(UNTYPABLE),
+                stderr,
+                ..
+            }) => Err(Error::Untypable {
                 text: c.to_string(),
-                detail: detail.to_owned(),
-            });
+                detail: stderr.trim().to_owned(),
+            }),
+            result => result.map(drop),
         }
-        Ok(())
     }
 
-    /// Puts `text` on the clipboard and pastes it with `cmd+v`, one keystroke however long the text.
     fn paste(&mut self, text: &str) -> Result<(), Error> {
-        self.osascript(CLIPBOARD_SCRIPT, Some(text), None)?;
-        self.cliclick(&["kd:cmd", "t:v", "ku:cmd"]).map(drop)
+        self.helper(&["paste", text], None).map(drop)
     }
 
     fn windows(&mut self, limit: Option<Duration>) -> Result<Vec<String>, Error> {
-        let output = self.osascript(WINDOWS_SCRIPT, None, limit)?;
+        let output = self.helper(&["windows"], limit)?;
         Ok(output.stdout.lines().map(str::to_owned).collect())
     }
 
     fn buttons(&mut self, limit: Option<Duration>) -> Result<Vec<Control>, Error> {
-        let output = self.osascript(CONTROLS_SCRIPT, None, limit)?.stdout;
+        let output = self.helper(&["buttons"], limit)?.stdout;
         parse_controls(&output).ok_or(Error::UnexpectedOutput {
             what: "on-screen buttons",
             output,
@@ -223,7 +104,7 @@ impl<R: Runner> Platform for MacScripts<R> {
     }
 
     fn dock(&mut self) -> Result<Vec<(String, Point)>, Error> {
-        let output = self.osascript(DOCK_SCRIPT, None, None)?.stdout;
+        let output = self.helper(&["dock"], None)?.stdout;
         parse_dock(&output).ok_or(Error::UnexpectedOutput {
             what: "Dock items",
             output,
@@ -231,7 +112,7 @@ impl<R: Runner> Platform for MacScripts<R> {
     }
 
     fn focus(&mut self, app: &AppName, limit: Option<Duration>) -> Result<bool, Error> {
-        let output = self.osascript(FOCUS_SCRIPT, Some(app.as_str()), limit)?;
+        let output = self.helper(&["focus", app.as_str()], limit)?;
         Ok(output.stdout.trim() == "true")
     }
 
@@ -287,12 +168,7 @@ impl Recorder for FfmpegScreen {
     }
 }
 
-/// `osascript` arguments that run `lines` as one script.
-fn osascript_args<'a>(lines: &[&'a str]) -> Vec<&'a str> {
-    lines.iter().flat_map(|line| ["-e", line]).collect()
-}
-
-/// Parses [`CONTROLS_SCRIPT`] output.
+/// Parses `buttons` output.
 fn parse_controls(text: &str) -> Option<Vec<Control>> {
     text.lines()
         .filter(|line| !line.is_empty())
@@ -324,7 +200,7 @@ fn parse_controls(text: &str) -> Option<Vec<Control>> {
         .collect()
 }
 
-/// Parses [`DOCK_SCRIPT`] output into names and icon centres.
+/// Parses `dock` output into names and icon centres.
 fn parse_dock(text: &str) -> Option<Vec<(String, Point)>> {
     text.lines()
         .filter(|line| !line.is_empty())
@@ -399,27 +275,7 @@ mod tests {
             args: &[&str],
             limit: Option<Duration>,
         ) -> Result<Output, Error> {
-            // osascript calls are logged by script name.
-            let line = if program == "osascript" {
-                let scripts = [
-                    ("dock", DOCK_SCRIPT),
-                    ("windows", WINDOWS_SCRIPT),
-                    ("controls", CONTROLS_SCRIPT),
-                    ("focus", FOCUS_SCRIPT),
-                    ("clipboard", CLIPBOARD_SCRIPT),
-                ];
-                let (name, rest) = scripts
-                    .iter()
-                    .find_map(|(name, script)| {
-                        let script = osascript_args(script);
-                        args.starts_with(&script)
-                            .then(|| (*name, &args[script.len()..]))
-                    })
-                    .unwrap_or(("unknown", &[]));
-                [&["osascript", name][..], rest].concat().join(" ")
-            } else {
-                command_line(program, args)
-            };
+            let line = command_line(program, args);
             self.calls.push(line.clone());
             if let Some(limit) = limit.filter(|limit| self.run_cost > *limit) {
                 self.clock += limit;
@@ -454,7 +310,7 @@ mod tests {
     }
 
     fn play(fake: Fake, body: &str) -> Result<Fake, Error> {
-        let mut desktop = Desktop::new(MacScripts::new(fake));
+        let mut desktop = Desktop::new(Helper::new(fake));
         for step in &steps(body) {
             desktop.play(step)?;
         }
@@ -464,14 +320,14 @@ mod tests {
     fn moves(fake: &Fake) -> Vec<&str> {
         fake.calls
             .iter()
-            .filter(|c| c.starts_with("cliclick m:"))
+            .filter(|c| c.starts_with("taperec-desktop move "))
             .map(String::as_str)
             .collect()
     }
 
-    const POINTER: &str = "cliclick p";
-    const DOCK: &str = "osascript dock";
-    const WINDOWS: &str = "osascript windows";
+    const POINTER: &str = "taperec-desktop pointer";
+    const DOCK: &str = "taperec-desktop dock";
+    const WINDOWS: &str = "taperec-desktop windows";
     /// Dock geometry as reported on a macos-26 runner.
     const DOCK_ITEMS: &str = "Finder\t196\t986\t68\t84\nSystem Settings\t1420\t986\t68\t84\n\
                               Terminal\t1488\t986\t68\t84\nmissing value\t1556\t986\t30\t84\n";
@@ -493,9 +349,9 @@ mod tests {
         assert_eq!(
             fake.calls,
             [
-                "cliclick t:h w:20",
-                "cliclick t:i w:20",
-                "cliclick t:! w:20"
+                "taperec-desktop type h",
+                "taperec-desktop type i",
+                "taperec-desktop type !"
             ]
         );
         // Pauses go between keystrokes.
@@ -504,20 +360,38 @@ mod tests {
 
     #[test]
     fn untypable_characters_fail_the_step() {
-        let fake = Fake::default().warn(
-            "cliclick t:é w:20",
-            "Unable to get key code for é (see https://github.com/BlueM/cliclick)\n",
-        );
+        let mut fake = Fake::default();
+        fake.replies.push((
+            "taperec-desktop type é",
+            Err(Error::Exit {
+                command: "taperec-desktop type é".into(),
+                code: Some(UNTYPABLE),
+                stderr: "cannot type \"é\"\n".into(),
+            }),
+        ));
         let err = play(fake, "  - type: \"café\"\n").err();
+        assert_eq!(
+            err,
+            Some(Error::Untypable {
+                text: "é".into(),
+                detail: "cannot type \"é\"".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn other_helper_failures_stay_failures() {
+        let fake = Fake::default().exit("taperec-desktop type a", 2);
+        let err = play(fake, "  - type: \"ab\"\n").err();
         assert!(
-            matches!(&err, Some(Error::Untypable { text, .. }) if text == "é"),
+            matches!(err, Some(Error::Exit { code: Some(2), .. })),
             "{err:?}"
         );
     }
 
     #[test]
-    fn other_cliclick_warnings_keep_typing() {
-        let fake = Fake::default().warn("cliclick t:a w:20", "cliclick: some unrelated notice\n");
+    fn helper_warnings_keep_typing() {
+        let fake = Fake::default().warn("taperec-desktop type a", "some unrelated notice\n");
         assert!(play(fake, "  - type: \"ab\"\n").is_ok());
     }
 
@@ -527,27 +401,27 @@ mod tests {
         assert_eq!(
             fake.calls,
             [
-                "cliclick t:a w:20",
-                "cliclick kp:tab w:20",
-                "cliclick t:b w:20",
-                "cliclick kp:return w:20"
+                "taperec-desktop type a",
+                "taperec-desktop type \t",
+                "taperec-desktop type b",
+                "taperec-desktop type \n"
             ]
         );
     }
 
     #[test]
-    fn presses_chords_with_modifiers_held() {
+    fn presses_chords_as_tapes_write_them() {
         let fake = play(
             Fake::default(),
-            "  - key: \"return\"\n  - key: \"cmd+space\"\n  - key: \"cmd+shift+p\"\n",
+            "  - key: \"return\"\n  - key: \"cmd+space\"\n  - key: \"primary+shift+p\"\n",
         )
         .unwrap();
         assert_eq!(
             fake.calls,
             [
-                "cliclick kp:return w:20",
-                "cliclick kd:cmd kp:space ku:cmd",
-                "cliclick kd:cmd,shift t:p ku:cmd,shift",
+                "taperec-desktop key return",
+                "taperec-desktop key cmd+space",
+                "taperec-desktop key primary+shift+p",
             ]
         );
     }
@@ -558,7 +432,7 @@ mod tests {
             run_cost: Duration::from_millis(10),
             ..Fake::default()
         }
-        .reply(POINTER, "0,0\n");
+        .reply(POINTER, "0\t0\n");
         let fake = play(
             fake,
             "  - set: { moveDuration: 500ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
@@ -582,7 +456,7 @@ mod tests {
 
     #[test]
     fn move_glides_at_sixty_hz_from_current_position() {
-        let fake = Fake::default().reply(POINTER, "100,200\n");
+        let fake = Fake::default().reply(POINTER, "100\t200\n");
         let fake = play(
             fake,
             "  - set: { moveDuration: 500ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
@@ -590,36 +464,39 @@ mod tests {
         .unwrap();
         let moves = moves(&fake);
         assert_eq!(moves.len(), 30);
-        assert_eq!(moves.last(), Some(&"cliclick m:900,600"));
+        assert_eq!(moves.last(), Some(&"taperec-desktop move 900 600"));
         assert_eq!(fake.slept, Duration::from_millis(500));
     }
 
     #[test]
     fn click_glides_then_clicks_in_place() {
-        let fake = Fake::default().reply(POINTER, "0,0\n");
+        let fake = Fake::default().reply(POINTER, "0\t0\n");
         let fake = play(fake, "  - click: { point: { x: 10, y: 20 } }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:10,20"));
-        assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
+        assert_eq!(moves(&fake).last(), Some(&"taperec-desktop move 10 20"));
+        assert_eq!(
+            fake.calls.last().map(String::as_str),
+            Some("taperec-desktop click")
+        );
     }
 
     #[test]
     fn dock_targets_aim_at_the_icon_centre() {
         let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
+            .reply(POINTER, "0\t0\n")
             .reply(DOCK, DOCK_ITEMS);
         let fake = play(fake, "  - moveTo: { dock: Terminal }\n").unwrap();
         // The icon centre: 1488 + 68/2, 986 + 84/2.
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1522,1028"));
+        assert_eq!(moves(&fake).last(), Some(&"taperec-desktop move 1522 1028"));
 
         let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
+            .reply(POINTER, "0\t0\n")
             .reply(DOCK, DOCK_ITEMS);
         let fake = play(fake, "  - moveTo: { dock: \"System Settings\" }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1454,1028"));
+        assert_eq!(moves(&fake).last(), Some(&"taperec-desktop move 1454 1028"));
     }
 
-    const CONTROLS: &str = "osascript controls";
-    const FOCUS: &str = "osascript focus";
+    const CONTROLS: &str = "taperec-desktop buttons";
+    const FOCUS: &str = "taperec-desktop focus";
     /// The first-launch prompt as accessibility reported it on a macos-26-intel runner.
     const PROMPT: &str = "CoreServicesUIAgent\tfalse\tCancel\t845\t432\t112\t30\n\
                           CoreServicesUIAgent\tfalse\tOpen\t963\t432\t112\t30\n";
@@ -627,12 +504,15 @@ mod tests {
     #[test]
     fn buttons_are_clicked_at_their_centre_once_they_appear() {
         let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
+            .reply(POINTER, "0\t0\n")
             .reply(CONTROLS, "")
             .reply(CONTROLS, PROMPT);
         let fake = play(fake, "  - click: { button: \"Open\", timeout: 5s }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1019,447"));
-        assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
+        assert_eq!(moves(&fake).last(), Some(&"taperec-desktop move 1019 447"));
+        assert_eq!(
+            fake.calls.last().map(String::as_str),
+            Some("taperec-desktop click")
+        );
         let polls = fake.calls.iter().filter(|c| *c == CONTROLS).count();
         assert_eq!(polls, 2);
     }
@@ -642,10 +522,10 @@ mod tests {
         let controls =
             "Docker Desktop\tfalse\tOpen\t0\t0\t10\t10\nCode\ttrue\tOpen\t100\t100\t10\t10\n";
         let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
+            .reply(POINTER, "0\t0\n")
             .reply(CONTROLS, controls);
         let fake = play(fake, "  - moveTo: { button: \"Open\" }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:105,105"));
+        assert_eq!(moves(&fake).last(), Some(&"taperec-desktop move 105 105"));
     }
 
     #[test]
@@ -687,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_sets_the_clipboard_then_presses_cmd_v() {
+    fn paste_hands_the_text_to_the_helper() {
         let fake = play(
             Fake::default(),
             "  - paste: \"curl -fsSL https://example.com\"\n",
@@ -695,10 +575,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             fake.calls,
-            [
-                "osascript clipboard curl -fsSL https://example.com",
-                "cliclick kd:cmd t:v ku:cmd"
-            ]
+            ["taperec-desktop paste curl -fsSL https://example.com"]
         );
     }
 
@@ -708,13 +585,7 @@ mod tests {
             .reply(FOCUS, "false\n")
             .reply(FOCUS, "true\n");
         let fake = play(fake, "  - focus: \"Visual Studio Code\"\n").unwrap();
-        assert_eq!(
-            fake.calls,
-            [
-                "osascript focus Visual Studio Code",
-                "osascript focus Visual Studio Code"
-            ]
-        );
+        assert_eq!(fake.calls, ["taperec-desktop focus Visual Studio Code"; 2]);
     }
 
     #[test]
@@ -737,7 +608,7 @@ mod tests {
     #[test]
     fn dock_targets_must_be_in_the_dock() {
         let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
+            .reply(POINTER, "0\t0\n")
             .reply(DOCK, DOCK_ITEMS);
         let err = play(fake, "  - click: { dock: Safari }\n").err();
         assert_eq!(err, Some(Error::NotInDock("Safari".into())));
@@ -746,7 +617,7 @@ mod tests {
     #[test]
     fn garbled_dock_listing_is_an_error() {
         let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
+            .reply(POINTER, "0\t0\n")
             .reply(DOCK, "Terminal\t1488\t986\n");
         let err = play(fake, "  - click: { dock: Terminal }\n").err();
         assert!(
@@ -761,13 +632,13 @@ mod tests {
         );
     }
 
-    /// Dock script output captured on a macos-26 runner, osascript's own newline included.
+    /// Dock items from a macos-26 runner, with a trailing blank line.
     const RUNNER_DOCK: &str = "Finder\t196\t986\t68\t84\nApps\t264\t986\t68\t84\n\
         System Settings\t1420\t986\t68\t84\nTerminal\t1488\t986\t68\t84\n\
         missing value\t1556\t986\t30\t84\nDownloads\t1587\t986\t68\t84\nTrash\t1655\t986\t68\t84\n\n";
 
     #[test]
-    fn parses_dock_listings_as_osascript_prints_them() {
+    fn parses_dock_listings_with_blank_lines() {
         let items = parse_dock(RUNNER_DOCK).unwrap();
         assert_eq!(items.len(), 7, "{items:?}");
         assert_eq!(
@@ -803,7 +674,7 @@ mod tests {
             .reply(WINDOWS, "Finder\n")
             .reply(WINDOWS, "Finder\nrunner — -bash — 80×24\n");
         let fake = play(fake, "  - waitWindow: { title: \"bash\" }\n").unwrap();
-        assert_eq!(fake.calls, ["osascript windows"; 3]);
+        assert_eq!(fake.calls, [WINDOWS; 3]);
         assert_eq!(fake.slept, POLL_INTERVAL * 2);
     }
 
@@ -811,12 +682,12 @@ mod tests {
     fn wait_window_ignores_case() {
         let fake = Fake::default().reply(WINDOWS, "Finder\no3s - Visual Studio Code\n");
         let fake = play(fake, "  - waitWindow: { title: \"VISUAL studio\" }\n").unwrap();
-        assert_eq!(fake.calls, ["osascript windows"]);
+        assert_eq!(fake.calls, [WINDOWS]);
     }
 
     #[test]
     fn screenshot_captures_silently() {
-        let mut desktop = Desktop::new(MacScripts::new(Fake::default()));
+        let mut desktop = Desktop::new(Helper::new(Fake::default()));
         desktop.screenshot("/out/fail.png").unwrap();
         assert_eq!(
             desktop.into_platform().into_runner().calls,
@@ -830,7 +701,7 @@ mod tests {
         for _ in 0..1000 {
             fake = fake.reply(WINDOWS, "Finder\n");
         }
-        let mut desktop = Desktop::new(MacScripts::new(fake));
+        let mut desktop = Desktop::new(Helper::new(fake));
         let err = steps("  - waitWindow: { title: \"Nope\", timeout: 1s }\n")
             .iter()
             .try_for_each(|s| desktop.play(s))
@@ -842,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_window_stops_on_osascript_failure() {
+    fn wait_window_stops_on_helper_failure() {
         let fake = Fake::default().exit(WINDOWS, 1);
         let err = play(fake, "  - waitWindow: { title: \"Terminal\" }\n").err();
         assert!(
@@ -875,7 +746,7 @@ mod tests {
         for _ in 0..1000 {
             fake = fake.exit("sh -c", 1);
         }
-        let mut desktop = Desktop::new(MacScripts::new(fake));
+        let mut desktop = Desktop::new(Helper::new(fake));
         let err = steps("  - waitUntil: { command: \"slow-check\", timeout: 1m }\n")
             .iter()
             .try_for_each(|s| desktop.play(s))
@@ -897,7 +768,7 @@ mod tests {
             run_cost: Duration::from_secs(600),
             ..Fake::default()
         };
-        let mut desktop = Desktop::new(MacScripts::new(fake));
+        let mut desktop = Desktop::new(Helper::new(fake));
         let err = steps("  - waitUntil: { command: \"curl -s http://stuck\", timeout: 1m }\n")
             .iter()
             .try_for_each(|s| desktop.play(s))
@@ -927,7 +798,7 @@ mod tests {
         for _ in 0..1000 {
             fake = fake.exit("sh -c", 1);
         }
-        let mut desktop = Desktop::new(MacScripts::new(fake));
+        let mut desktop = Desktop::new(Helper::new(fake));
         let step = &steps("  - waitUntil: { command: \"false\", timeout: 30m }\n")[0];
         assert_eq!(
             desktop.play_while(step, &mut alive_for(3)),
@@ -938,7 +809,7 @@ mod tests {
 
     #[test]
     fn sleeps_end_when_the_recording_stops() {
-        let mut desktop = Desktop::new(MacScripts::new(Fake::default()));
+        let mut desktop = Desktop::new(Helper::new(Fake::default()));
         let step = &steps("  - sleep: 5m\n")[0];
         assert_eq!(
             desktop.play_while(step, &mut alive_for(3)),
@@ -970,7 +841,7 @@ mod tests {
 
     #[test]
     fn garbled_pointer_location_is_an_error() {
-        for output in ["huh\n", "1,2,3\n", "-5,7\n", "+5,7\n"] {
+        for output in ["huh\n", "1\t2\t3\n", "-5\t7\n", "+5\t7\n", "5,7\n"] {
             let fake = Fake::default().reply(POINTER, output);
             let err = play(fake, "  - moveTo: { point: { x: 1, y: 1 } }\n").err();
             assert!(
