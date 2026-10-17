@@ -10,11 +10,14 @@
 //! MoveTo 960,540
 //! Click dock:Terminal
 //! WaitWindow "Terminal"
+//! Focus "Terminal"
 //! Type "echo \"hi\""
+//! Paste "git clone https://github.com/Hansehart/o3s.git"
 //! Key cmd+shift+p
 //! Warp "Installing" 3s
 //! WaitUntil "command -v code" 5m
 //! EndWarp
+//! Click button:"Open" 2m
 //! ```
 
 use std::fmt;
@@ -102,6 +105,30 @@ impl KeyChord {
     }
 }
 
+/// A button's exact label on screen, e.g. `Open`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlLabel(String);
+
+impl ControlLabel {
+    /// The label as written in the tape.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// An app's name as macOS knows it, e.g. `Terminal` or `Visual Studio Code`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppName(String);
+
+impl AppName {
+    /// The name as written in the tape.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Text a visible window's title contains, matched case-insensitively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowName(String);
@@ -160,6 +187,13 @@ pub enum Target {
     Point(Point),
     /// The centre of a Dock icon.
     Dock(DockItem),
+    /// The centre of a button found by its label, once it appears.
+    Control {
+        /// The button's label.
+        label: ControlLabel,
+        /// The longest wait for it to appear.
+        timeout: Duration,
+    },
 }
 
 /// One action of a tutorial, run in order.
@@ -182,6 +216,13 @@ pub enum Step {
         /// The longest wait.
         timeout: Duration,
     },
+    /// Bring an app to the front and wait until it is.
+    Focus {
+        /// The app.
+        app: AppName,
+        /// The longest wait.
+        timeout: Duration,
+    },
     /// Wait until a shell command succeeds.
     WaitUntil {
         /// Command polled with `sh -c`.
@@ -200,6 +241,8 @@ pub enum Step {
     EndWarp,
     /// Type text keystroke by keystroke.
     Type(String),
+    /// Put text on the clipboard and paste it with a single keystroke.
+    Paste(String),
     /// Press a key chord.
     Key(KeyChord),
 }
@@ -226,7 +269,7 @@ pub enum ParseErrorKind {
     TrailingInput(String),
     /// A malformed duration; durations look like `500ms`, `1.5s` or `2m`.
     BadDuration(String),
-    /// A malformed target; targets look like `x,y` or `dock:<name>`.
+    /// A malformed target; targets look like `x,y`, `dock:<name>` or `button:"<label>"`.
     BadTarget(String),
     /// A malformed key chord; chords look like `return` or `cmd+shift+p`.
     BadKey(String),
@@ -240,6 +283,8 @@ pub enum ParseErrorKind {
     BadEscape(char),
     /// An empty `WaitWindow` text.
     EmptyWindowName,
+    /// An empty `button:` label or `Focus` app name.
+    EmptyName,
     /// An empty `WaitUntil` command.
     EmptyCommand,
     /// An empty `Warp` label.
@@ -284,7 +329,7 @@ impl fmt::Display for ParseErrorKind {
             Self::BadTarget(value) => {
                 write!(
                     f,
-                    "expected `x,y`, `dock:<name>` or `dock:\"<name>\"`, got `{value}`"
+                    "expected `x,y`, `dock:<name>`, `dock:\"<name>\"` or `button:\"<label>\"`, got `{value}`"
                 )
             }
             Self::BadKey(value) => write!(
@@ -302,6 +347,7 @@ impl fmt::Display for ParseErrorKind {
                 "unknown escape `\\{c}`; use `\\\"`, `\\\\`, `\\n` or `\\t`"
             ),
             Self::EmptyWindowName => write!(f, "the window pattern is empty"),
+            Self::EmptyName => write!(f, "the name is empty"),
             Self::EmptyCommand => write!(f, "the command is empty"),
             Self::EmptyWarpLabel => write!(f, "the warp label is empty"),
             Self::ZeroWarpLength => write!(f, "a warp must last longer than zero"),
@@ -412,6 +458,11 @@ fn parse_line(text: &str) -> Result<Line, ParseErrorKind> {
             end(rest)?;
             Step::Type(text)
         }
+        "Paste" => {
+            let (text, rest) = quoted(rest)?;
+            end(rest)?;
+            Step::Paste(text)
+        }
         "WaitWindow" => {
             let (name, rest) = quoted(rest)?;
             let timeout = optional_timeout(rest)?;
@@ -420,6 +471,17 @@ fn parse_line(text: &str) -> Result<Line, ParseErrorKind> {
             }
             Step::WaitWindow {
                 name: WindowName(name),
+                timeout,
+            }
+        }
+        "Focus" => {
+            let (app, rest) = quoted(rest)?;
+            let timeout = optional_timeout(rest)?;
+            if app.is_empty() {
+                return Err(ParseErrorKind::EmptyName);
+            }
+            Step::Focus {
+                app: AppName(app),
                 timeout,
             }
         }
@@ -547,8 +609,19 @@ fn duration(value: &str) -> Result<Duration, ParseErrorKind> {
         .ok_or_else(bad)
 }
 
-/// Parses `x,y`, `dock:<name>` or `dock:"<name with spaces>"` as the whole rest of the line.
+/// Parses `x,y`, `dock:<name>`, `dock:"<name with spaces>"` or `button:"<label>" [timeout]` as the whole rest of the line.
 fn target(rest: &str) -> Result<Target, ParseErrorKind> {
+    if let Some(quoted_label) = rest.strip_prefix("button:") {
+        let (label, rest) = quoted(quoted_label)?;
+        let timeout = optional_timeout(rest)?;
+        if label.is_empty() {
+            return Err(ParseErrorKind::EmptyName);
+        }
+        return Ok(Target::Control {
+            label: ControlLabel(label),
+            timeout,
+        });
+    }
     if let Some(quoted_name) = rest.strip_prefix("dock:").filter(|r| r.starts_with('"')) {
         let (name, rest) = quoted(quoted_name).map_err(|e| match e {
             ParseErrorKind::MissingArgument => ParseErrorKind::BadTarget(quoted_name.into()),
@@ -1013,7 +1086,7 @@ mod tests {
             ),
             (
                 "Output a.mp4\nClick 10",
-                "line 2: expected `x,y`, `dock:<name>` or `dock:\"<name>\"`, got `10`",
+                "line 2: expected `x,y`, `dock:<name>`, `dock:\"<name>\"` or `button:\"<label>\"`, got `10`",
             ),
             (
                 "Output a.mp4\nKey ctrl+",
@@ -1083,6 +1156,59 @@ mod tests {
             steps("MoveTo dock:\"App Store\""),
             [Step::MoveTo(Target::Dock(DockItem("App Store".into())))]
         );
+    }
+
+    #[test]
+    fn buttons_are_found_by_quoted_label_with_an_optional_wait() {
+        let button = |label: &str, timeout| {
+            Step::Click(Target::Control {
+                label: ControlLabel(label.into()),
+                timeout,
+            })
+        };
+        assert_eq!(
+            steps("Click button:\"Open\""),
+            [button("Open", DEFAULT_WAIT)]
+        );
+        assert_eq!(
+            steps("Click button:\"Reopen in Container\" 2m"),
+            [button("Reopen in Container", Duration::from_secs(120))]
+        );
+        assert_eq!(kind("Click button:Open"), ParseErrorKind::ExpectedQuote);
+        assert_eq!(kind("Click button:\"\""), ParseErrorKind::EmptyName);
+        assert_eq!(
+            kind("Click button:\"Open\" soon"),
+            ParseErrorKind::BadDuration("soon".into())
+        );
+    }
+
+    #[test]
+    fn paste_takes_quoted_text() {
+        assert_eq!(
+            steps("Paste \"echo \\\"hi\\\"\""),
+            [Step::Paste("echo \"hi\"".into())]
+        );
+        assert_eq!(kind("Paste echo"), ParseErrorKind::ExpectedQuote);
+    }
+
+    #[test]
+    fn focus_names_an_app_with_an_optional_wait() {
+        assert_eq!(
+            steps("Focus \"Visual Studio Code\" 20s"),
+            [Step::Focus {
+                app: AppName("Visual Studio Code".into()),
+                timeout: Duration::from_secs(20),
+            }]
+        );
+        assert_eq!(
+            steps("Focus \"Terminal\""),
+            [Step::Focus {
+                app: AppName("Terminal".into()),
+                timeout: DEFAULT_WAIT,
+            }]
+        );
+        assert_eq!(kind("Focus \"\""), ParseErrorKind::EmptyName);
+        assert_eq!(kind("Focus Terminal"), ParseErrorKind::ExpectedQuote);
     }
 
     #[test]
