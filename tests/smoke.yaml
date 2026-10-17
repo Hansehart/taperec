@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../schema/taperec.schema.json
+# Plays Dock clicks, focus, windows, typing, pasting, keys, waits and a warp on a hosted Mac.
+output: smoke.mp4
+steps:
+  - set: { moveDuration: 600ms, typingSpeed: 40ms }
+  - sleep: 1s
+  - click: { dock: Terminal }
+  - waitWindow: { title: sh, timeout: 30s }
+  - focus: Terminal
+  - sleep: 1s
+  # Fails the tape when a lone Return goes missing.
+  - paste: touch /tmp/taperec-return
+  - key: return
+  - waitUntil: { command: test -f /tmp/taperec-return, timeout: 10s }
+  # Fails the tape when pasted text goes missing.
+  - paste: echo the quick brown fox jumps over 0123456789 lazy dogs > /tmp/taperec-typed
+  - key: return
+  - waitUntil:
+      command: grep -qx 'the quick brown fox jumps over 0123456789 lazy dogs' /tmp/taperec-typed
+      timeout: 10s
+  - type: echo taperec smoke
+  - key: return
+  - warp:
+      label: Waiting
+      length: 1s
+      steps:
+        - waitUntil: { command: sleep 3, timeout: 30s }
+  - key: primary+k
+  - type: echo done
+  - key: return
+  - sleep: 1s

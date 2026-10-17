@@ -1,29 +1,32 @@
-//! Parser for `.tape` tutorial scripts.
+//! Tapes: YAML documents of steps, parsed into what the desktop plays.
 //!
-//! One command per line; `#` starts a comment. Exactly one `Output` is required.
+//! The JSON Schema from [`schema`] lets editors complete and check tapes while they are written.
 //!
-//! ```text
-//! Output open_terminal.mp4
-//! Set TypingSpeed 60ms
-//! Set MoveDuration 700ms
-//! Sleep 1.5s
-//! MoveTo 960,540
-//! Click dock:Terminal
-//! WaitWindow "Terminal"
-//! Focus "Terminal"
-//! Type "echo \"hi\""
-//! Paste "git clone https://github.com/Hansehart/o3s.git"
-//! Key cmd+shift+p
-//! Warp "Installing" 3s
-//! WaitUntil "command -v code" 5m
-//! EndWarp
-//! Click button:"Open" 2m
+//! ```yaml
+//! output: open_terminal.mp4
+//! steps:
+//!   - set: { typingSpeed: 60ms, moveDuration: 700ms }
+//!   - click: { dock: Terminal }
+//!   - waitWindow: { title: Terminal }
+//!   - focus: Terminal
+//!   - paste: git clone https://github.com/Hansehart/o3s.git
+//!   - key: primary+shift+p
+//!   - warp:
+//!       label: Installing
+//!       length: 3s
+//!       steps:
+//!         - waitUntil: { command: command -v code, timeout: 5m }
+//!   - click: { button: Open, timeout: 2m }
 //! ```
 
 use std::fmt;
 use std::time::Duration;
 
 use crate::units::{self, Finer};
+
+mod document;
+
+pub use document::schema;
 
 /// A position on screen, in pixels from the top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +52,8 @@ impl DockItem {
 /// A modifier held during a chord, by its cliclick `kd:`/`ku:` name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modifier {
+    /// The platform's main shortcut modifier: ⌘ on macOS.
+    Primary,
     /// The ⌘ key.
     Cmd,
     /// The ⌃ key.
@@ -66,7 +71,7 @@ impl Modifier {
     #[must_use]
     pub fn cliclick_name(self) -> &'static str {
         match self {
-            Self::Cmd => "cmd",
+            Self::Primary | Self::Cmd => "cmd",
             Self::Ctrl => "ctrl",
             Self::Alt => "alt",
             Self::Shift => "shift",
@@ -256,343 +261,112 @@ pub struct Tape {
     pub steps: Vec<Step>,
 }
 
-/// Why a tape failed to parse.
+/// Why a value in a tape is malformed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseErrorKind {
-    /// An unknown command word.
-    UnknownCommand(String),
-    /// An unknown `Set` setting.
-    UnknownSetting(String),
-    /// A command missing its argument.
-    MissingArgument,
-    /// Extra input after a command's arguments.
-    TrailingInput(String),
-    /// A malformed duration; durations look like `500ms`, `1.5s` or `2m`.
-    BadDuration(String),
-    /// A malformed target; targets look like `x,y`, `dock:<name>` or `button:"<label>"`.
-    BadTarget(String),
-    /// A malformed key chord; chords look like `return` or `cmd+shift+p`.
-    BadKey(String),
-    /// A malformed output; outputs are plain `.mp4` file names.
-    BadOutput(String),
-    /// A string argument missing its opening `"`.
-    ExpectedQuote,
-    /// A quoted string missing its closing `"`.
-    UnterminatedString,
-    /// A quoted string uses an unknown escape.
-    BadEscape(char),
-    /// An empty `WaitWindow` text.
-    EmptyWindowName,
-    /// An empty `button:` label or `Focus` app name.
-    EmptyName,
-    /// An empty `WaitUntil` command.
-    EmptyCommand,
-    /// An empty `Warp` label.
-    EmptyWarpLabel,
-    /// A zero-length `Warp`.
-    ZeroWarpLength,
-    /// A `Warp` inside another warp.
-    NestedWarp,
-    /// An `EndWarp` outside any warp.
-    UnmatchedEndWarp,
-    /// A `Warp` still open at the end, reported at its line.
-    UnclosedWarp,
-    /// A second `Output` line.
-    DuplicateOutput,
-    /// A tape missing its `Output` line, reported at line 0.
-    MissingOutput,
+enum ValueError {
+    /// A malformed duration.
+    Duration(String),
+    /// A malformed key chord.
+    Key(String),
+    /// A malformed output file name.
+    Output(String),
 }
 
-/// A parse failure and the 1-based line it occurred on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    /// 1-based line number, or 0 for whole-file errors.
-    pub line: usize,
-    /// What went wrong.
-    pub kind: ParseErrorKind,
-}
-
-impl fmt::Display for ParseErrorKind {
+impl fmt::Display for ValueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownCommand(command) => write!(f, "unknown command `{command}`"),
-            Self::UnknownSetting(setting) => write!(
-                f,
-                "unknown setting `{setting}`; expected `TypingSpeed` or `MoveDuration`"
-            ),
-            Self::MissingArgument => write!(f, "missing argument"),
-            Self::TrailingInput(rest) => write!(f, "unexpected `{rest}` at the end of the line"),
-            Self::BadDuration(value) => write!(
+            Self::Duration(value) => write!(
                 f,
                 "expected a duration like `500ms`, `1.5s` or `2m`, got `{value}`"
             ),
-            Self::BadTarget(value) => {
-                write!(
-                    f,
-                    "expected `x,y`, `dock:<name>`, `dock:\"<name>\"` or `button:\"<label>\"`, got `{value}`"
-                )
-            }
-            Self::BadKey(value) => write!(
+            Self::Key(value) => write!(
                 f,
-                "expected keys like `return` or `cmd+shift+p`, got `{value}`"
+                "expected keys like `return` or `primary+shift+p`, got `{value}`"
             ),
-            Self::BadOutput(value) => write!(
+            Self::Output(value) => write!(
                 f,
                 "expected a plain file name ending in `.mp4`, got `{value}`"
             ),
-            Self::ExpectedQuote => write!(f, "expected a \"quoted\" string"),
-            Self::UnterminatedString => write!(f, "unterminated string"),
-            Self::BadEscape(c) => write!(
-                f,
-                "unknown escape `\\{c}`; use `\\\"`, `\\\\`, `\\n` or `\\t`"
-            ),
-            Self::EmptyWindowName => write!(f, "the window pattern is empty"),
-            Self::EmptyName => write!(f, "the name is empty"),
-            Self::EmptyCommand => write!(f, "the command is empty"),
-            Self::EmptyWarpLabel => write!(f, "the warp label is empty"),
-            Self::ZeroWarpLength => write!(f, "a warp must last longer than zero"),
-            Self::NestedWarp => write!(
-                f,
-                "`Warp` inside another warp; close it with `EndWarp` first"
-            ),
-            Self::UnmatchedEndWarp => write!(f, "`EndWarp` without a `Warp`"),
-            Self::UnclosedWarp => write!(f, "this `Warp` is never closed with `EndWarp`"),
-            Self::DuplicateOutput => write!(f, "a second `Output`; a tape has exactly one"),
-            Self::MissingOutput => write!(f, "no `Output` line"),
         }
     }
 }
 
+/// Where in a tape a problem lies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Where {
+    /// A 1-based position in the YAML text.
+    Position {
+        /// The line.
+        line: u64,
+        /// The column.
+        column: u64,
+    },
+    /// A step by its path, e.g. `steps[2].warp.steps[0]`.
+    Step(String),
+    /// The tape as a whole.
+    Document,
+}
+
+/// Why a tape is invalid, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    /// Where the problem lies.
+    pub at: Where,
+    /// What is wrong.
+    pub message: String,
+}
+
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Line 0 marks whole-tape errors.
-        match self.line {
-            0 => self.kind.fmt(f),
-            line => write!(f, "line {line}: {}", self.kind),
+        match &self.at {
+            Where::Position { line, column } => {
+                write!(f, "line {line}, column {column}: {}", self.message)
+            }
+            Where::Step(path) => write!(f, "{path}: {}", self.message),
+            Where::Document => self.message.fmt(f),
         }
     }
 }
 
 impl std::error::Error for ParseError {}
 
-/// Parses a whole tape.
+/// Parses a YAML tape.
 ///
 /// # Errors
 ///
-/// Returns the first problem found, with its line number.
+/// The first problem found, at its line and column or step path.
 pub fn parse(source: &str) -> Result<Tape, ParseError> {
-    let mut output = None;
-    let mut steps = Vec::new();
-    // Line of the warp currently open, if any.
-    let mut open_warp = None;
-    for (index, raw) in source.lines().enumerate() {
-        let line = index + 1;
-        let text = raw.trim();
-        if text.is_empty() || text.starts_with('#') {
-            continue;
-        }
-        let at = |kind| ParseError { line, kind };
-        match parse_line(text).map_err(at)? {
-            Line::Output(file) => {
-                if output.replace(file).is_some() {
-                    return Err(at(ParseErrorKind::DuplicateOutput));
-                }
-            }
-            Line::Step(step) => {
-                match step {
-                    Step::Warp { .. } if open_warp.is_some() => {
-                        return Err(at(ParseErrorKind::NestedWarp));
-                    }
-                    Step::Warp { .. } => open_warp = Some(line),
-                    Step::EndWarp if open_warp.take().is_none() => {
-                        return Err(at(ParseErrorKind::UnmatchedEndWarp));
-                    }
-                    _ => {}
-                }
-                steps.push(step);
-            }
-        }
-    }
-    if let Some(line) = open_warp {
-        return Err(ParseError {
-            line,
-            kind: ParseErrorKind::UnclosedWarp,
+    let document: document::Document =
+        serde_saphyr::from_str(source).map_err(|e| yaml_error(&e))?;
+    document.lower().map_err(|violation| ParseError {
+        at: Where::Step(violation.path),
+        message: violation.message.to_owned(),
+    })
+}
+
+/// A YAML or shape error, with its position when the parser knows it.
+fn yaml_error(error: &serde_saphyr::Error) -> ParseError {
+    let options = serde_saphyr::render_options! { snippets: serde_saphyr::SnippetMode::Off };
+    let mut message = error.render_with_options(options);
+    let at = error
+        .location()
+        .map_or(Where::Document, |location| Where::Position {
+            line: location.line(),
+            column: location.column(),
         });
-    }
-    let output = output.ok_or(ParseError {
-        line: 0,
-        kind: ParseErrorKind::MissingOutput,
-    })?;
-    Ok(Tape { output, steps })
-}
-
-enum Line {
-    Output(OutputFile),
-    Step(Step),
-}
-
-fn parse_line(text: &str) -> Result<Line, ParseErrorKind> {
-    let (command, rest) = split_word(text);
-    let step = match command {
-        "Output" => {
-            let (name, rest) = word(rest)?;
-            end(rest)?;
-            return output_file(name).map(Line::Output);
-        }
-        "Set" => {
-            let (setting, rest) = word(rest)?;
-            let (value, rest) = word(rest)?;
-            end(rest)?;
-            match setting {
-                "TypingSpeed" => Step::TypingSpeed(duration(value)?),
-                "MoveDuration" => Step::MoveDuration(duration(value)?),
-                other => return Err(ParseErrorKind::UnknownSetting(other.into())),
-            }
-        }
-        "Sleep" => Step::Sleep(single(rest, duration)?),
-        "MoveTo" => Step::MoveTo(target(rest)?),
-        "Click" => Step::Click(target(rest)?),
-        "Key" => Step::Key(single(rest, key_chord)?),
-        "Type" => {
-            let (text, rest) = quoted(rest)?;
-            end(rest)?;
-            Step::Type(text)
-        }
-        "Paste" => {
-            let (text, rest) = quoted(rest)?;
-            end(rest)?;
-            Step::Paste(text)
-        }
-        "WaitWindow" => {
-            let (name, rest) = quoted(rest)?;
-            let timeout = optional_timeout(rest)?;
-            if name.is_empty() {
-                return Err(ParseErrorKind::EmptyWindowName);
-            }
-            Step::WaitWindow {
-                name: WindowName(name),
-                timeout,
-            }
-        }
-        "Focus" => {
-            let (app, rest) = quoted(rest)?;
-            let timeout = optional_timeout(rest)?;
-            if app.is_empty() {
-                return Err(ParseErrorKind::EmptyName);
-            }
-            Step::Focus {
-                app: AppName(app),
-                timeout,
-            }
-        }
-        "WaitUntil" => {
-            let (command, rest) = quoted(rest)?;
-            let timeout = optional_timeout(rest)?;
-            if command.is_empty() {
-                return Err(ParseErrorKind::EmptyCommand);
-            }
-            Step::WaitUntil {
-                command: ShellCommand(command),
-                timeout,
-            }
-        }
-        "Warp" => {
-            let (label, rest) = quoted(rest)?;
-            if label.is_empty() {
-                return Err(ParseErrorKind::EmptyWarpLabel);
-            }
-            let length = single(rest, duration)?;
-            if length.is_zero() {
-                return Err(ParseErrorKind::ZeroWarpLength);
-            }
-            Step::Warp {
-                label: WarpLabel(label),
-                length,
-            }
-        }
-        "EndWarp" => {
-            end(rest)?;
-            Step::EndWarp
-        }
-        other => return Err(ParseErrorKind::UnknownCommand(other.into())),
-    };
-    Ok(Line::Step(step))
-}
-
-/// Splits off the first whitespace-delimited word; the rest is left-trimmed.
-fn split_word(text: &str) -> (&str, &str) {
-    match text.split_once(char::is_whitespace) {
-        Some((first, rest)) => (first, rest.trim_start()),
-        None => (text, ""),
-    }
-}
-
-fn word(rest: &str) -> Result<(&str, &str), ParseErrorKind> {
-    if rest.is_empty() {
-        return Err(ParseErrorKind::MissingArgument);
-    }
-    Ok(split_word(rest))
-}
-
-fn end(rest: &str) -> Result<(), ParseErrorKind> {
-    if rest.is_empty() {
-        Ok(())
-    } else {
-        Err(ParseErrorKind::TrailingInput(rest.into()))
-    }
-}
-
-/// An optional trailing duration, defaulting to [`DEFAULT_WAIT`].
-fn optional_timeout(rest: &str) -> Result<Duration, ParseErrorKind> {
-    if rest.is_empty() {
-        Ok(DEFAULT_WAIT)
-    } else {
-        single(rest, duration)
-    }
-}
-
-/// Parses exactly one word with `convert`.
-fn single<T>(
-    rest: &str,
-    convert: fn(&str) -> Result<T, ParseErrorKind>,
-) -> Result<T, ParseErrorKind> {
-    let (value, rest) = word(rest)?;
-    end(rest)?;
-    convert(value)
-}
-
-/// Parses a `"`-quoted string with `\"`, `\\`, `\n` and `\t` escapes.
-fn quoted(rest: &str) -> Result<(String, &str), ParseErrorKind> {
-    let mut chars = rest.char_indices();
-    match chars.next() {
-        None => return Err(ParseErrorKind::MissingArgument),
-        Some((_, '"')) => {}
-        Some(_) => return Err(ParseErrorKind::ExpectedQuote),
-    }
-    let mut text = String::new();
-    while let Some((index, c)) = chars.next() {
-        match c {
-            '"' => {
-                let after = rest.get(index + 1..).unwrap_or_default();
-                return Ok((text, after.trim_start()));
-            }
-            '\\' => match chars.next() {
-                Some((_, '"')) => text.push('"'),
-                Some((_, '\\')) => text.push('\\'),
-                Some((_, 'n')) => text.push('\n'),
-                Some((_, 't')) => text.push('\t'),
-                Some((_, other)) => return Err(ParseErrorKind::BadEscape(other)),
-                None => return Err(ParseErrorKind::UnterminatedString),
-            },
-            _ => text.push(c),
+    // The position is reported in `at`, so drop the copy the parser appends.
+    if let Where::Position { line, column } = at {
+        let suffix = format!(" at line {line}, column {column}");
+        if let Some(stripped) = message.strip_suffix(&suffix) {
+            message = stripped.to_owned();
         }
     }
-    Err(ParseErrorKind::UnterminatedString)
+    ParseError { at, message }
 }
 
 /// Parses `<int>ms`, `<decimal>s` or `<decimal>m` exactly.
-fn duration(value: &str) -> Result<Duration, ParseErrorKind> {
-    let bad = || ParseErrorKind::BadDuration(value.into());
+fn duration(value: &str) -> Result<Duration, ValueError> {
+    let bad = || ValueError::Duration(value.into());
     if let Some(millis) = value.strip_suffix("ms") {
         return units::natural(millis)
             .map(Duration::from_millis)
@@ -607,54 +381,6 @@ fn duration(value: &str) -> Result<Duration, ParseErrorKind> {
         .strip_suffix('s')
         .and_then(|seconds| units::seconds(seconds, Finer::Reject))
         .ok_or_else(bad)
-}
-
-/// Parses `x,y`, `dock:<name>`, `dock:"<name with spaces>"` or `button:"<label>" [timeout]` as the whole rest of the line.
-fn target(rest: &str) -> Result<Target, ParseErrorKind> {
-    if let Some(quoted_label) = rest.strip_prefix("button:") {
-        let (label, rest) = quoted(quoted_label)?;
-        let timeout = optional_timeout(rest)?;
-        if label.is_empty() {
-            return Err(ParseErrorKind::EmptyName);
-        }
-        return Ok(Target::Control {
-            label: ControlLabel(label),
-            timeout,
-        });
-    }
-    if let Some(quoted_name) = rest.strip_prefix("dock:").filter(|r| r.starts_with('"')) {
-        let (name, rest) = quoted(quoted_name).map_err(|e| match e {
-            ParseErrorKind::MissingArgument => ParseErrorKind::BadTarget(quoted_name.into()),
-            other => other,
-        })?;
-        end(rest)?;
-        return dock_item(name).map(Target::Dock);
-    }
-    single(rest, |value| {
-        let bad = || ParseErrorKind::BadTarget(value.into());
-        if let Some(name) = value.strip_prefix("dock:") {
-            return dock_item(name.into()).map(Target::Dock).map_err(|_| bad());
-        }
-        let (x, y) = value.split_once(',').ok_or_else(bad)?;
-        let coordinate = |s: &str| units::natural(s).ok_or_else(bad);
-        Ok(Target::Point(Point {
-            x: coordinate(x)?,
-            y: coordinate(y)?,
-        }))
-    })
-}
-
-/// A Dock name made of characters that stay inside an `AppleScript` string literal.
-fn dock_item(name: String) -> Result<DockItem, ParseErrorKind> {
-    if name.is_empty()
-        || name
-            .chars()
-            .any(|c| c == '"' || c == '\\' || c.is_control())
-    {
-        Err(ParseErrorKind::BadTarget(name))
-    } else {
-        Ok(DockItem(name))
-    }
 }
 
 /// Named keys cliclick's `kp:` accepts (`KeyPressAction.m`).
@@ -721,13 +447,14 @@ const NAMED_KEYS: [&str; 59] = [
 ];
 
 /// Parses `[modifier+]...key`: distinct modifiers, then a named key or one printable character.
-fn key_chord(value: &str) -> Result<KeyChord, ParseErrorKind> {
-    let bad = || ParseErrorKind::BadKey(value.into());
+fn key_chord(value: &str) -> Result<KeyChord, ValueError> {
+    let bad = || ValueError::Key(value.into());
     let mut parts: Vec<&str> = value.split('+').collect();
     let last = parts.pop().ok_or_else(bad)?;
     let mut modifiers = Vec::with_capacity(parts.len());
     for part in parts {
         let modifier = match part {
+            "primary" => Modifier::Primary,
             "cmd" => Modifier::Cmd,
             "ctrl" => Modifier::Ctrl,
             "alt" => Modifier::Alt,
@@ -752,7 +479,7 @@ fn key_chord(value: &str) -> Result<KeyChord, ParseErrorKind> {
     Ok(KeyChord { modifiers, key })
 }
 
-fn output_file(value: &str) -> Result<OutputFile, ParseErrorKind> {
+fn output_file(value: &str) -> Result<OutputFile, ValueError> {
     let plain = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.');
     let valid = value
         .strip_suffix(".mp4")
@@ -762,7 +489,7 @@ fn output_file(value: &str) -> Result<OutputFile, ParseErrorKind> {
     if valid {
         Ok(OutputFile(value.into()))
     } else {
-        Err(ParseErrorKind::BadOutput(value.into()))
+        Err(ValueError::Output(value.into()))
     }
 }
 
@@ -774,29 +501,42 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    fn kind(source: &str) -> ParseErrorKind {
-        parse(source).unwrap_err().kind
+    /// Wraps YAML step items into a tape.
+    fn tape(items: &str) -> String {
+        format!("output: t.mp4\nsteps:\n{items}")
     }
 
-    fn steps(body: &str) -> Vec<Step> {
-        parse(&format!("Output t.mp4\n{body}")).unwrap().steps
+    fn steps(items: &str) -> Vec<Step> {
+        parse(&tape(items)).unwrap().steps
+    }
+
+    fn error(items: &str) -> ParseError {
+        parse(&tape(items)).unwrap_err()
+    }
+
+    fn at_step(path: &str) -> Where {
+        Where::Step(path.into())
     }
 
     #[test]
-    fn parses_every_command() {
-        let tape = r#"
-            Output demo.mp4
-            Set TypingSpeed 60ms
-            Set MoveDuration 0.7s
-            Sleep 1.5s
-            MoveTo 960,540
-            Click dock:Terminal
-            WaitWindow "Terminal"
-            Type "echo hi"
-            Key cmd+shift+p
-        "#;
+    fn parses_every_step() {
+        let source = r"
+output: demo.mp4
+steps:
+  - set: { typingSpeed: 60ms, moveDuration: 0.7s }
+  - sleep: 1.5s
+  - moveTo: { point: { x: 960, y: 540 } }
+  - click: { dock: Terminal }
+  - waitWindow: { title: Terminal }
+  - focus: Terminal
+  - type: echo hi
+  - paste: git clone https://github.com/Hansehart/o3s.git
+  - key: cmd+shift+p
+  - waitUntil: { command: command -v code, timeout: 5m }
+  - click: { button: Open, timeout: 2m }
+";
         assert_eq!(
-            parse(tape).unwrap(),
+            parse(source).unwrap(),
             Tape {
                 output: OutputFile("demo.mp4".into()),
                 steps: vec![
@@ -809,10 +549,23 @@ mod tests {
                         name: WindowName("Terminal".into()),
                         timeout: DEFAULT_WAIT,
                     },
+                    Step::Focus {
+                        app: AppName("Terminal".into()),
+                        timeout: DEFAULT_WAIT,
+                    },
                     Step::Type("echo hi".into()),
+                    Step::Paste("git clone https://github.com/Hansehart/o3s.git".into()),
                     Step::Key(KeyChord {
                         modifiers: vec![Modifier::Cmd, Modifier::Shift],
                         key: Key::Char('p'),
+                    }),
+                    Step::WaitUntil {
+                        command: ShellCommand("command -v code".into()),
+                        timeout: ms(300_000),
+                    },
+                    Step::Click(Target::Control {
+                        label: ControlLabel("Open".into()),
+                        timeout: ms(120_000),
                     }),
                 ],
             }
@@ -820,61 +573,48 @@ mod tests {
     }
 
     #[test]
-    fn skips_comments_and_blank_lines() {
+    fn yaml_quoting_and_comments_carry_over() {
         assert_eq!(
-            steps("# intro\n\n  # more\nSleep 1s\n"),
-            vec![Step::Sleep(ms(1000))]
+            steps("  # a comment\n  - type: \"say \\\"hi\\\" \\\\ bye\\n\"\n  - type: 'it''s'\n"),
+            vec![
+                Step::Type("say \"hi\" \\ bye\n".into()),
+                Step::Type("it's".into())
+            ]
         );
     }
 
     #[test]
-    fn unescapes_quoted_strings() {
-        assert_eq!(
-            steps(r#"Type "say \"hi\" \\ bye\n""#),
-            vec![Step::Type("say \"hi\" \\ bye\n".into())]
-        );
-    }
-
-    #[test]
-    fn reports_line_of_unknown_command() {
-        let err = parse("Output t.mp4\nJump 3\n").unwrap_err();
-        assert_eq!(
-            err,
-            ParseError {
-                line: 2,
-                kind: ParseErrorKind::UnknownCommand("Jump".into())
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_setting() {
-        assert_eq!(
-            kind("Set Speed 1s"),
-            ParseErrorKind::UnknownSetting("Speed".into())
-        );
+    fn unknown_steps_and_fields_point_at_their_line() {
+        let err = error("  - sleep: 1s\n  - jump: 3\n");
+        assert!(matches!(err.at, Where::Position { line: 4, .. }), "{err}");
+        assert!(err.message.contains("jump"), "{err}");
+        let err = error("  - waitWindow: { title: x, wait: 2s }\n");
+        assert!(matches!(err.at, Where::Position { line: 3, .. }), "{err}");
+        assert!(err.message.contains("wait"), "{err}");
     }
 
     #[test]
     fn rejects_bad_durations() {
-        for bad in ["fast", "3", "-1s", "1.5ms", "s"] {
-            assert_eq!(
-                kind(&format!("Sleep {bad}")),
-                ParseErrorKind::BadDuration(bad.into()),
-                "{bad}"
+        for bad in ["fast", "3", "-1s", "1.5ms", "s", "1h", ""] {
+            let err = error(&format!("  - sleep: \"{bad}\"\n"));
+            assert!(
+                matches!(err.at, Where::Position { line: 3, .. }),
+                "{bad}: {err}"
+            );
+            assert!(
+                err.message
+                    .contains(&ValueError::Duration(bad.into()).to_string()),
+                "{bad}: {err}"
             );
         }
     }
 
     #[test]
-    fn rejects_bad_targets() {
-        for bad in ["10", "dock:", "a,b", "-1,5", "+5,7", "1,2,3"] {
-            assert_eq!(
-                kind(&format!("Click {bad}")),
-                ParseErrorKind::BadTarget(bad.into()),
-                "{bad}"
-            );
-        }
+    fn durations_take_minutes() {
+        assert_eq!(
+            steps("  - sleep: 2m\n  - sleep: 1.5m\n"),
+            vec![Step::Sleep(ms(120_000)), Step::Sleep(ms(90_000))]
+        );
     }
 
     #[test]
@@ -890,10 +630,11 @@ mod tests {
             "ab",
             "cmd+é",
         ] {
-            assert_eq!(
-                kind(&format!("Key {bad}")),
-                ParseErrorKind::BadKey(bad.into()),
-                "{bad}"
+            let err = error(&format!("  - key: \"{bad}\"\n"));
+            assert!(
+                err.message
+                    .contains(&ValueError::Key(bad.into()).to_string()),
+                "{bad}: {err}"
             );
         }
     }
@@ -901,337 +642,121 @@ mod tests {
     #[test]
     fn rejects_bad_outputs() {
         for bad in ["demo.mov", "dir/demo.mp4", ".mp4", "../demo.mp4"] {
-            assert_eq!(
-                kind(&format!("Output {bad}")),
-                ParseErrorKind::BadOutput(bad.into()),
-                "{bad}"
+            let err = parse(&format!("output: \"{bad}\"\nsteps: []\n")).unwrap_err();
+            assert!(
+                err.message
+                    .contains(&ValueError::Output(bad.into()).to_string()),
+                "{bad}: {err}"
             );
         }
     }
 
     #[test]
-    fn rejects_unterminated_string() {
-        assert_eq!(kind("Type \"oops"), ParseErrorKind::UnterminatedString);
+    fn requires_output_and_steps() {
+        let err = parse("steps: []\n").unwrap_err();
+        assert!(err.message.contains("output"), "{err}");
+        let err = parse("output: t.mp4\n").unwrap_err();
+        assert!(err.message.contains("steps"), "{err}");
     }
 
     #[test]
-    fn rejects_unknown_escape() {
-        assert_eq!(kind(r#"Type "a\qb""#), ParseErrorKind::BadEscape('q'));
-    }
-
-    #[test]
-    fn rejects_unquoted_text() {
-        assert_eq!(kind("Type hello"), ParseErrorKind::ExpectedQuote);
-    }
-
-    #[test]
-    fn rejects_empty_window_name() {
-        assert_eq!(kind(r#"WaitWindow """#), ParseErrorKind::EmptyWindowName);
-    }
-
-    #[test]
-    fn rejects_missing_argument() {
-        for bad in ["Key", "Output", "Sleep", "Set", "Set TypingSpeed", "Type"] {
-            assert_eq!(kind(bad), ParseErrorKind::MissingArgument, "{bad}");
+    fn names_must_not_be_empty() {
+        for items in [
+            "  - focus: \"\"\n",
+            "  - waitWindow: { title: \" \" }\n",
+            "  - waitUntil: { command: \"\" }\n",
+            "  - click: { button: \"\" }\n",
+        ] {
+            let err = error(items);
+            assert!(err.message.contains("must not be empty"), "{items}: {err}");
         }
     }
 
     #[test]
-    fn rejects_trailing_input() {
+    fn targets_take_exactly_one_kind() {
+        assert_eq!(error("  - click: {}\n").at, at_step("steps[0]"));
         assert_eq!(
-            kind("Sleep 1s 2s"),
-            ParseErrorKind::TrailingInput("2s".into())
-        );
-        assert_eq!(
-            kind(r#"Type "a" b"#),
-            ParseErrorKind::TrailingInput("b".into())
-        );
-    }
-
-    #[test]
-    fn requires_exactly_one_output() {
-        assert_eq!(
-            parse("Sleep 1s").unwrap_err(),
+            error("  - click: { dock: Finder, button: Open }\n"),
             ParseError {
-                line: 0,
-                kind: ParseErrorKind::MissingOutput
+                at: at_step("steps[0]"),
+                message: "a target takes exactly one of `point`, `dock` or `button`".into(),
             }
         );
         assert_eq!(
-            parse("Output a.mp4\nOutput b.mp4").unwrap_err(),
+            error("  - sleep: 1s\n  - moveTo: { dock: Finder, timeout: 2s }\n"),
             ParseError {
-                line: 2,
-                kind: ParseErrorKind::DuplicateOutput
+                at: at_step("steps[1]"),
+                message: "`timeout` only applies to a `button` target".into(),
             }
         );
     }
 
     #[test]
-    fn durations_take_minutes() {
+    fn buttons_wait_fifteen_seconds_unless_told() {
         assert_eq!(
-            steps("Sleep 45m"),
-            vec![Step::Sleep(Duration::from_mins(45))]
-        );
-        assert_eq!(
-            steps("Sleep 1.5m"),
-            vec![Step::Sleep(Duration::from_secs(90))]
-        );
-        for bad in ["m", "-1m", "1.5mm", "1.m5"] {
-            assert_eq!(
-                kind(&format!("Sleep {bad}")),
-                ParseErrorKind::BadDuration(bad.into()),
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn waits_take_optional_timeouts() {
-        assert_eq!(
-            steps("WaitWindow \"^o3s - .+ - Visual Studio Code$\" 60m\nWaitUntil \"command -v code\"\nWaitUntil \"true\" 5s"),
-            vec![
-                Step::WaitWindow {
-                    name: WindowName("^o3s - .+ - Visual Studio Code$".into()),
-                    timeout: Duration::from_hours(1),
-                },
-                Step::WaitUntil {
-                    command: ShellCommand("command -v code".into()),
-                    timeout: DEFAULT_WAIT,
-                },
-                Step::WaitUntil {
-                    command: ShellCommand("true".into()),
-                    timeout: Duration::from_secs(5),
-                },
-            ]
-        );
-        assert_eq!(kind("WaitUntil \"\""), ParseErrorKind::EmptyCommand);
-        assert_eq!(
-            kind("WaitUntil \"x\" soon"),
-            ParseErrorKind::BadDuration("soon".into())
-        );
-        assert_eq!(
-            kind("WaitWindow \"x\" 1s 2s"),
-            ParseErrorKind::TrailingInput("2s".into())
+            steps("  - click: { button: Reopen in Container }\n"),
+            vec![Step::Click(Target::Control {
+                label: ControlLabel("Reopen in Container".into()),
+                timeout: DEFAULT_WAIT,
+            })]
         );
     }
 
     #[test]
-    fn parses_warps() {
+    fn warps_nest_their_steps() {
+        let items = "  - warp:\n      label: Build\n      length: 5s\n      steps:\n        - sleep: 1s\n  - sleep: 2s\n";
         assert_eq!(
-            steps("Warp \"Building the cage\" 5s\nSleep 1s\nEndWarp"),
+            steps(items),
             vec![
                 Step::Warp {
-                    label: WarpLabel("Building the cage".into()),
-                    length: Duration::from_secs(5),
+                    label: WarpLabel("Build".into()),
+                    length: ms(5000),
                 },
-                Step::Sleep(Duration::from_secs(1)),
+                Step::Sleep(ms(1000)),
                 Step::EndWarp,
+                Step::Sleep(ms(2000)),
             ]
         );
     }
 
     #[test]
     fn rejects_bad_warps() {
-        assert_eq!(kind("Warp \"\" 3s"), ParseErrorKind::EmptyWarpLabel);
-        assert_eq!(kind("Warp \"x\" 0s"), ParseErrorKind::ZeroWarpLength);
-        assert_eq!(kind("Warp \"x\""), ParseErrorKind::MissingArgument);
+        let nested = "  - warp:\n      label: a\n      length: 1s\n      steps:\n        - warp: { label: b, length: 1s, steps: [] }\n";
         assert_eq!(
-            kind("EndWarp now"),
-            ParseErrorKind::TrailingInput("now".into())
-        );
-    }
-
-    #[test]
-    fn warps_must_balance() {
-        let at = |source: &str| parse(&format!("Output t.mp4\n{source}")).unwrap_err();
-        assert_eq!(
-            at("Warp \"a\" 1s\nWarp \"b\" 1s\nEndWarp\nEndWarp"),
+            error(nested),
             ParseError {
-                line: 3,
-                kind: ParseErrorKind::NestedWarp
+                at: at_step("steps[0].warp.steps[0]"),
+                message: "a warp cannot sit inside another warp".into(),
             }
         );
         assert_eq!(
-            at("Sleep 1s\nEndWarp"),
+            error("  - warp: { label: a, length: 0s, steps: [] }\n"),
             ParseError {
-                line: 3,
-                kind: ParseErrorKind::UnmatchedEndWarp
-            }
-        );
-        assert_eq!(
-            at("Warp \"a\" 1s\nSleep 1s"),
-            ParseError {
-                line: 2,
-                kind: ParseErrorKind::UnclosedWarp
+                at: at_step("steps[0]"),
+                message: "a warp must last longer than zero".into(),
             }
         );
     }
 
     #[test]
-    fn errors_read_as_plain_english() {
-        let cases = [
-            ("Output a.mp4\nJump 3", "line 2: unknown command `Jump`"),
-            (
-                "Output a.mp4\nSet Speed 1s",
-                "line 2: unknown setting `Speed`; expected `TypingSpeed` or `MoveDuration`",
-            ),
-            ("Output a.mp4\nKey", "line 2: missing argument"),
-            (
-                "Output a.mp4\nSleep 1s 2s",
-                "line 2: unexpected `2s` at the end of the line",
-            ),
-            (
-                "Output a.mp4\nSleep fast",
-                "line 2: expected a duration like `500ms`, `1.5s` or `2m`, got `fast`",
-            ),
-            (
-                "Output a.mp4\nClick 10",
-                "line 2: expected `x,y`, `dock:<name>`, `dock:\"<name>\"` or `button:\"<label>\"`, got `10`",
-            ),
-            (
-                "Output a.mp4\nKey ctrl+",
-                "line 2: expected keys like `return` or `cmd+shift+p`, got `ctrl+`",
-            ),
-            (
-                "Output demo.mov",
-                "line 1: expected a plain file name ending in `.mp4`, got `demo.mov`",
-            ),
-            (
-                "Output a.mp4\nType hi",
-                "line 2: expected a \"quoted\" string",
-            ),
-            ("Output a.mp4\nType \"hi", "line 2: unterminated string"),
-            (
-                "Output a.mp4\nType \"a\\qb\"",
-                "line 2: unknown escape `\\q`; use `\\\"`, `\\\\`, `\\n` or `\\t`",
-            ),
-            (
-                "Output a.mp4\nWaitWindow \"\"",
-                "line 2: the window pattern is empty",
-            ),
-            (
-                "Output a.mp4\nWaitUntil \"\"",
-                "line 2: the command is empty",
-            ),
-            (
-                "Output a.mp4\nWarp \"\" 1s\nEndWarp",
-                "line 2: the warp label is empty",
-            ),
-            (
-                "Output a.mp4\nWarp \"x\" 0s\nEndWarp",
-                "line 2: a warp must last longer than zero",
-            ),
-            (
-                "Output a.mp4\nWarp \"a\" 1s\nWarp \"b\" 1s",
-                "line 3: `Warp` inside another warp; close it with `EndWarp` first",
-            ),
-            (
-                "Output a.mp4\nEndWarp",
-                "line 2: `EndWarp` without a `Warp`",
-            ),
-            (
-                "Output a.mp4\nWarp \"a\" 1s",
-                "line 2: this `Warp` is never closed with `EndWarp`",
-            ),
-            (
-                "Output a.mp4\nOutput b.mp4",
-                "line 2: a second `Output`; a tape has exactly one",
-            ),
-            ("Sleep 1s", "no `Output` line"),
-        ];
-        for (tape, message) in cases {
-            assert_eq!(parse(tape).unwrap_err().to_string(), message, "{tape:?}");
-        }
+    fn set_needs_a_speed() {
+        assert_eq!(
+            steps("  - set: { moveDuration: 1s }\n"),
+            vec![Step::MoveDuration(ms(1000))]
+        );
+        assert_eq!(error("  - set: {}\n").at, at_step("steps[0]"));
     }
 
     #[test]
-    fn dock_names_may_be_quoted() {
-        let dock = |name: &str| Step::Click(Target::Dock(DockItem(name.into())));
-        assert_eq!(steps("Click dock:Terminal"), [dock("Terminal")]);
-        assert_eq!(
-            steps("Click dock:\"System Settings\""),
-            [dock("System Settings")]
-        );
-        assert_eq!(
-            steps("MoveTo dock:\"App Store\""),
-            [Step::MoveTo(Target::Dock(DockItem("App Store".into())))]
-        );
-    }
-
-    #[test]
-    fn buttons_are_found_by_quoted_label_with_an_optional_wait() {
-        let button = |label: &str, timeout| {
-            Step::Click(Target::Control {
-                label: ControlLabel(label.into()),
-                timeout,
-            })
+    fn errors_read_with_their_place() {
+        let positioned = ParseError {
+            at: Where::Position { line: 3, column: 9 },
+            message: "unknown field".into(),
         };
+        assert_eq!(positioned.to_string(), "line 3, column 9: unknown field");
         assert_eq!(
-            steps("Click button:\"Open\""),
-            [button("Open", DEFAULT_WAIT)]
-        );
-        assert_eq!(
-            steps("Click button:\"Reopen in Container\" 2m"),
-            [button("Reopen in Container", Duration::from_secs(120))]
-        );
-        assert_eq!(kind("Click button:Open"), ParseErrorKind::ExpectedQuote);
-        assert_eq!(kind("Click button:\"\""), ParseErrorKind::EmptyName);
-        assert_eq!(
-            kind("Click button:\"Open\" soon"),
-            ParseErrorKind::BadDuration("soon".into())
-        );
-    }
-
-    #[test]
-    fn paste_takes_quoted_text() {
-        assert_eq!(
-            steps("Paste \"echo \\\"hi\\\"\""),
-            [Step::Paste("echo \"hi\"".into())]
-        );
-        assert_eq!(kind("Paste echo"), ParseErrorKind::ExpectedQuote);
-    }
-
-    #[test]
-    fn focus_names_an_app_with_an_optional_wait() {
-        assert_eq!(
-            steps("Focus \"Visual Studio Code\" 20s"),
-            [Step::Focus {
-                app: AppName("Visual Studio Code".into()),
-                timeout: Duration::from_secs(20),
-            }]
-        );
-        assert_eq!(
-            steps("Focus \"Terminal\""),
-            [Step::Focus {
-                app: AppName("Terminal".into()),
-                timeout: DEFAULT_WAIT,
-            }]
-        );
-        assert_eq!(kind("Focus \"\""), ParseErrorKind::EmptyName);
-        assert_eq!(kind("Focus Terminal"), ParseErrorKind::ExpectedQuote);
-    }
-
-    #[test]
-    fn dock_names_cannot_break_out_of_applescript_strings() {
-        assert_eq!(
-            kind("Click dock:\"a\\\"b\""),
-            ParseErrorKind::BadTarget("a\"b".into())
-        );
-        assert_eq!(
-            kind("Click dock:\"a\\\\b\""),
-            ParseErrorKind::BadTarget("a\\b".into())
-        );
-        assert_eq!(
-            kind("Click dock:\"a\\nb\""),
-            ParseErrorKind::BadTarget("a\nb".into())
-        );
-        assert_eq!(
-            kind("Click dock:\"\""),
-            ParseErrorKind::BadTarget(String::new())
-        );
-        assert_eq!(
-            kind("Click dock:\"Finder\" x"),
-            ParseErrorKind::TrailingInput("x".into())
+            error("  - set: {}\n").to_string(),
+            "steps[0]: `set` needs `typingSpeed` or `moveDuration`"
         );
     }
 
@@ -1239,29 +764,44 @@ mod tests {
     fn key_chords_use_cliclick_names() {
         let chord =
             |modifiers: Vec<Modifier>, key: Key| vec![Step::Key(KeyChord { modifiers, key })];
-        assert_eq!(steps("Key return"), chord(vec![], Key::Named("return")));
         assert_eq!(
-            steps("Key cmd+space"),
+            steps("  - key: return\n"),
+            chord(vec![], Key::Named("return"))
+        );
+        assert_eq!(
+            steps("  - key: cmd+space\n"),
             chord(vec![Modifier::Cmd], Key::Named("space"))
         );
-        assert_eq!(steps("Key f12"), chord(vec![], Key::Named("f12")));
+        assert_eq!(steps("  - key: f12\n"), chord(vec![], Key::Named("f12")));
         assert_eq!(
-            steps("Key ctrl+alt+fn+arrow-left"),
+            steps("  - key: ctrl+alt+fn+arrow-left\n"),
             chord(
                 vec![Modifier::Ctrl, Modifier::Alt, Modifier::Fn],
                 Key::Named("arrow-left")
             )
         );
-        assert_eq!(steps("Key a"), chord(vec![], Key::Char('a')));
+        assert_eq!(steps("  - key: a\n"), chord(vec![], Key::Char('a')));
         assert_eq!(
-            steps("Key shift+1"),
+            steps("  - key: \"shift+1\"\n"),
             chord(vec![Modifier::Shift], Key::Char('1'))
         );
     }
 
     #[test]
+    fn primary_is_cmd_on_macos() {
+        assert_eq!(
+            steps("  - key: primary+shift+p\n"),
+            vec![Step::Key(KeyChord {
+                modifiers: vec![Modifier::Primary, Modifier::Shift],
+                key: Key::Char('p'),
+            })]
+        );
+        assert_eq!(Modifier::Primary.cliclick_name(), "cmd");
+    }
+
+    #[test]
     fn key_chords_expose_modifiers_and_key() {
-        let Step::Key(chord) = &steps("Key ctrl+alt+fn+arrow-left")[0] else {
+        let Step::Key(chord) = &steps("  - key: ctrl+alt+fn+arrow-left\n")[0] else {
             panic!("not a key step");
         };
         assert_eq!(
@@ -1270,5 +810,25 @@ mod tests {
         );
         assert_eq!(chord.key(), &Key::Named("arrow-left"));
         assert_eq!(Modifier::Cmd.cliclick_name(), "cmd");
+    }
+
+    #[test]
+    fn committed_schema_is_current() {
+        assert_eq!(
+            include_str!("../schema/taperec.schema.json"),
+            schema(),
+            "regenerate with ./test.sh run -q -- schema > schema/taperec.schema.json"
+        );
+    }
+
+    #[test]
+    fn schema_marks_platform_extras_and_target_kinds() {
+        let schema = schema();
+        assert!(schema.contains("\"x-platforms\""), "{schema}");
+        assert!(schema.contains("\"oneOf\""), "{schema}");
+        assert!(
+            schema.contains("\"primary+shift+p\"") || schema.contains("primary"),
+            "{schema}"
+        );
     }
 }

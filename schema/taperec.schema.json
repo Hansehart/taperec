@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "taperec tape",
+  "description": "A tape: the video it records and what happens on screen.",
+  "type": "object",
+  "properties": {
+    "output": {
+      "description": "The video file, a plain name ending in `.mp4`, e.g. `intro.mp4`.",
+      "$ref": "#/$defs/Output"
+    },
+    "steps": {
+      "description": "What happens on screen, in order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Step"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "output",
+    "steps"
+  ],
+  "$defs": {
+    "Duration": {
+      "description": "A duration: whole milliseconds like `500ms`, or seconds or minutes like `1.5s` or `2m`.",
+      "type": "string",
+      "examples": [
+        "500ms",
+        "1.5s",
+        "2m"
+      ],
+      "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?[sm])$"
+    },
+    "KeyChord": {
+      "description": "Modifiers (`primary`, `cmd`, `ctrl`, `alt`, `shift`, `fn`) joined by `+` before a named key or one character, e.g. `return` or `primary+shift+p`. `primary` is cmd on macOS.",
+      "type": "string",
+      "anyOf": [
+        {
+          "enum": [
+            "return",
+            "enter",
+            "esc",
+            "tab",
+            "space",
+            "delete",
+            "fwd-delete",
+            "f1",
+            "f2",
+            "f3",
+            "f4",
+            "f5",
+            "f6",
+            "f7",
+            "f8",
+            "f9",
+            "f10",
+            "f11",
+            "f12",
+            "f13",
+            "f14",
+            "f15",
+            "f16",
+            "arrow-up",
+            "arrow-down",
+            "arrow-left",
+            "arrow-right",
+            "home",
+            "end",
+            "page-up",
+            "page-down",
+            "num-0",
+            "num-1",
+            "num-2",
+            "num-3",
+            "num-4",
+            "num-5",
+            "num-6",
+            "num-7",
+            "num-8",
+            "num-9",
+            "num-clear",
+            "num-equals",
+            "num-divide",
+            "num-multiply",
+            "num-minus",
+            "num-plus",
+            "num-enter",
+            "mute",
+            "volume-up",
+            "volume-down",
+            "brightness-up",
+            "brightness-down",
+            "play-pause",
+            "play-previous",
+            "play-next",
+            "keys-light-toggle",
+            "keys-light-up",
+            "keys-light-down"
+          ]
+        },
+        {
+          "pattern": "^((primary|cmd|ctrl|alt|shift|fn)\\+)*(return|enter|esc|tab|space|delete|fwd-delete|f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12|f13|f14|f15|f16|arrow-up|arrow-down|arrow-left|arrow-right|home|end|page-up|page-down|num-0|num-1|num-2|num-3|num-4|num-5|num-6|num-7|num-8|num-9|num-clear|num-equals|num-divide|num-multiply|num-minus|num-plus|num-enter|mute|volume-up|volume-down|brightness-up|brightness-down|play-pause|play-previous|play-next|keys-light-toggle|keys-light-up|keys-light-down|[!-*,-~])$"
+        }
+      ]
+    },
+    "Name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "Output": {
+      "type": "string",
+      "examples": [
+        "intro.mp4"
+      ],
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.mp4$"
+    },
+    "Point": {
+      "description": "A screen position in pixels from the top-left corner.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "description": "Pixels from the left edge.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "description": "Pixels from the top edge.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ]
+    },
+    "Set": {
+      "description": "Speeds for the steps that follow.",
+      "type": "object",
+      "properties": {
+        "moveDuration": {
+          "description": "Time each pointer glide takes.",
+          "$ref": "#/$defs/Duration"
+        },
+        "typingSpeed": {
+          "description": "Pause between keystrokes of `type`.",
+          "$ref": "#/$defs/Duration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Step": {
+      "description": "One action of a tape.",
+      "oneOf": [
+        {
+          "description": "Glide the pointer to a target and left-click it.",
+          "type": "object",
+          "properties": {
+            "click": {
+              "$ref": "#/$defs/Target"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "click"
+          ]
+        },
+        {
+          "description": "Glide the pointer to a target.",
+          "type": "object",
+          "properties": {
+            "moveTo": {
+              "$ref": "#/$defs/Target"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "moveTo"
+          ]
+        },
+        {
+          "description": "Type text keystroke by keystroke; prefer `paste` for anything long.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Put text on the clipboard and paste it with a single keystroke.",
+          "type": "object",
+          "properties": {
+            "paste": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "paste"
+          ]
+        },
+        {
+          "description": "Press a key chord, e.g. `return` or `primary+shift+p`.",
+          "type": "object",
+          "properties": {
+            "key": {
+              "$ref": "#/$defs/KeyChord"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "key"
+          ]
+        },
+        {
+          "description": "Bring an app to the front by name, e.g. `Terminal`, and wait until it is.",
+          "type": "object",
+          "properties": {
+            "focus": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "focus"
+          ]
+        },
+        {
+          "description": "Wait until a visible window's title contains the text, ignoring case.",
+          "type": "object",
+          "properties": {
+            "waitWindow": {
+              "$ref": "#/$defs/WaitWindow"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "waitWindow"
+          ]
+        },
+        {
+          "description": "Wait until a shell command succeeds.",
+          "type": "object",
+          "properties": {
+            "waitUntil": {
+              "$ref": "#/$defs/WaitUntil"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "waitUntil"
+          ]
+        },
+        {
+          "description": "Wait for a while.",
+          "type": "object",
+          "properties": {
+            "sleep": {
+              "$ref": "#/$defs/Duration"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "sleep"
+          ]
+        },
+        {
+          "description": "Change the speed of the steps that follow.",
+          "type": "object",
+          "properties": {
+            "set": {
+              "$ref": "#/$defs/Set"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "set"
+          ]
+        },
+        {
+          "description": "Play the nested steps fast-forwarded into `length` under a caption.",
+          "type": "object",
+          "properties": {
+            "warp": {
+              "$ref": "#/$defs/Warp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "warp"
+          ]
+        }
+      ]
+    },
+    "Target": {
+      "description": "Where the pointer goes: exactly one of `point`, `dock` or `button`.",
+      "type": "object",
+      "properties": {
+        "button": {
+          "description": "A button by its exact label, e.g. `Open`, clicked once it appears.",
+          "$ref": "#/$defs/Name"
+        },
+        "dock": {
+          "description": "A Dock icon by its exact name, e.g. `Terminal`.",
+          "$ref": "#/$defs/Name",
+          "x-platforms": [
+            "macos"
+          ]
+        },
+        "point": {
+          "description": "A screen position in pixels from the top-left corner.",
+          "$ref": "#/$defs/Point"
+        },
+        "timeout": {
+          "description": "How long to wait for the button; only with `button`, 15s unless given.",
+          "$ref": "#/$defs/Duration"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "point"
+          ]
+        },
+        {
+          "required": [
+            "dock"
+          ]
+        },
+        {
+          "required": [
+            "button"
+          ]
+        }
+      ]
+    },
+    "WaitUntil": {
+      "description": "A shell command to wait for.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Run with `sh -c` until it exits 0.",
+          "$ref": "#/$defs/Name"
+        },
+        "timeout": {
+          "description": "The longest wait, 15s unless given.",
+          "$ref": "#/$defs/Duration"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ]
+    },
+    "WaitWindow": {
+      "description": "A window to wait for.",
+      "type": "object",
+      "properties": {
+        "timeout": {
+          "description": "The longest wait, 15s unless given.",
+          "$ref": "#/$defs/Duration"
+        },
+        "title": {
+          "description": "Text the title contains, ignoring case.",
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ]
+    },
+    "Warp": {
+      "description": "A fast-forwarded stretch.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "The caption shown while it plays, e.g. `Installing`.",
+          "$ref": "#/$defs/Name"
+        },
+        "length": {
+          "description": "How long it lasts in the video.",
+          "$ref": "#/$defs/Duration"
+        },
+        "steps": {
+          "description": "What happens meanwhile; no warp inside a warp.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Step"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "length",
+        "steps"
+      ]
+    }
+  }
+}

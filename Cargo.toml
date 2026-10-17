@@ -7,6 +7,10 @@ license = "MIT"
 description = "Record scripted desktop tutorials from .tape files"
 
 [dependencies]
+schemars = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde-saphyr = "2.0"
+serde_json = "1.0"
 
 [lints.rust]
 unsafe_code = "forbid"

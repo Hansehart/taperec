@@ -244,7 +244,9 @@ mod tests {
     #[test]
     fn timeline_times_warps_between_markers() {
         let tape =
-            crate::tape::parse("Output t.mp4\nWarp \"Build\" 5s\nSleep 1s\nEndWarp\nSleep 1s")
+            crate::tape::parse(
+            "output: t.mp4\nsteps:\n  - warp: { label: Build, length: 5s, steps: [sleep: 1s] }\n  - sleep: 1s\n",
+        )
                 .unwrap();
         let mut timeline = Timeline::default();
         for (step, at) in tape.steps.iter().zip([2, 3, 600, 601]) {

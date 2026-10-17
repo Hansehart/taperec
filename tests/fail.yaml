@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=../schema/taperec.schema.json
+# Waits for a window that stays closed, so recording fails.
+output: fail.mp4
+steps:
+  - sleep: 1s
+  - waitWindow: { title: no window carries this title, timeout: 3s }

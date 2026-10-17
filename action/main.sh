@@ -170,11 +170,18 @@ prepare_desktop() {
 }
 
 # Records each tape into a directory and lists the videos as the action's output.
+# Prints where a tape's failure screenshot goes: its file name without the extension.
+failshot_path() {
+    local name
+    name=$(basename "$2")
+    printf '%s/%s-failshot.png\n' "$1" "${name%.*}"
+}
+
 render() {
     local out=$1 tape
     mkdir -p "$out"
     while IFS= read -r tape; do
-        taperec "$tape" --out-dir "$out" --failshot "$out/$(basename "$tape" .tape)-failshot.png"
+        taperec "$tape" --out-dir "$out" --failshot "$(failshot_path "$out" "$tape")"
     done <<<"$2"
     {
         echo "videos<<TAPEREC_VIDEOS"
@@ -186,7 +193,7 @@ render() {
 main() {
     require_mac
     [ -n "${INPUT_TAPES:-}" ] || bail "the tapes input is required"
-    local tapes target bin
+    local tapes target bin tape
     tapes=$(tapes_from "$INPUT_TAPES")
     target=$(target_triple "${RUNNER_ARCH:-}")
     install_tools
@@ -199,6 +206,10 @@ main() {
     fi
     export PATH="$bin:$PATH"
     taperec --version
+    # Every tape is valid before the desktop is touched.
+    local -a list=()
+    while IFS= read -r tape; do list+=("$tape"); done <<<"$tapes"
+    taperec check "${list[@]}" || bail "a tape is invalid"
     prepare_desktop "${INPUT_DOCK:-}" "$target" "${INPUT_OUT_DIR:-taperec}"
     render "${INPUT_OUT_DIR:-taperec}" "$tapes"
 }
