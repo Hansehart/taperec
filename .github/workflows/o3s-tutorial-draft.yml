@@ -7,7 +7,7 @@ on:
       run:
         description: What to record
         type: choice
-        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts]
+        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts, clock]
         default: sections
       sections:
         description: Sections to record, a JSON list
@@ -248,3 +248,16 @@ jobs:
       - name: Timestamp probe
         timeout-minutes: 10
         run: .github/scripts/pts-probe.sh out
+
+  # Records with wall-clock frame timestamps, the shared clock a two-stage recording needs.
+  clock-probe:
+    if: inputs.run == 'clock'
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Clock probe
+        timeout-minutes: 10
+        run: .github/scripts/clock-probe.sh out
