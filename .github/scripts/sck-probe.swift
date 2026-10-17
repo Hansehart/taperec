@@ -91,7 +91,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.async {
             self.log("frames: \(self.complete) complete, \(self.skipped) skipped, \(self.busy) dropped busy")
             guard self.started else { self.log("no frames"); exit(1) }
+            // The screen may have stood still since the last frame; the file still lasts until now.
+            let now = CMTimeAdd(CMClockGetTime(CMClockGetHostTimeClock()), self.offset!)
             self.input.markAsFinished()
+            self.writer.endSession(atSourceTime: now)
             self.writer.finishWriting {
                 self.log("finished: \(self.writer.status.rawValue) \(String(describing: self.writer.error))")
                 exit(self.writer.status == .completed ? 0 : 1)
@@ -121,8 +124,8 @@ Task {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else { log("no display"); exit(1) }
         let config = SCStreamConfiguration()
-        config.width = 1920
-        config.height = 1080
+        config.width = display.width * 2 > 1920 ? 1920 : display.width
+        config.height = display.width * 2 > 1920 ? 1080 : display.height
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.queueDepth = 8

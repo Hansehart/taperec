@@ -6,6 +6,8 @@ out=$1
 mkdir -p "$out"
 HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg cliclick > /dev/null 2>&1
 swiftc -swift-version 5 -O .github/scripts/sck-probe.swift -o "$out/sck-probe" || exit 1
+# Runs a command for at most $1 seconds.
+limit() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
 
 # CPU shares every 2 s of the capture, the encoder service and the compositor.
@@ -29,14 +31,14 @@ wiggle() {
 report() {
     local file=$1 first=$2
     local start duration frames
-    start=$(ffprobe -v error -show_entries format=start_time -of csv=p=0 "$file")
-    duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file")
-    frames=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$file")
+    start=$(limit 30 ffprobe -v error -show_entries format=start_time -of csv=p=0 "$file")
+    duration=$(limit 30 ffprobe -v error -show_entries format=duration -of csv=p=0 "$file")
+    frames=$(limit 60 ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$file")
     echo "$file: start_time $start (first frame logged at $first, diff $(awk -v a="$start" -v b="$first" 'BEGIN{printf "%.3f", a-b}') s), duration $duration, $frames frames"
-    ffmpeg -v error -i "$file" -f null - 2>&1 | head -3 | sed 's/^/  decode: /'
+    limit 60 ffmpeg -v error -i "$file" -f null - 2>&1 | head -3 | sed 's/^/  decode: /'
     echo "  decode exit ${PIPESTATUS[0]}"
-    ffmpeg -v error -y -i "$file" -c copy -avoid_negative_ts make_zero "${file%.mov}-remux.mp4" 2>&1 | head -2
-    ffmpeg -v error -y -i "${file%.mov}-remux.mp4" -vf fps=30 -c:v libx264 -preset veryfast "${file%.mov}-cfr.mp4" 2>&1 | head -2
+    limit 60 ffmpeg -v error -y -i "$file" -c copy -avoid_negative_ts make_zero "${file%.mov}-remux.mp4" 2>&1 | head -2
+    limit 120 ffmpeg -v error -y -i "${file%.mov}-remux.mp4" -vf fps=30 -c:v libx264 -preset veryfast "${file%.mov}-cfr.mp4" 2>&1 | head -2
     echo "  remux+cfr frames: $(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "${file%.mov}-cfr.mp4")"
 }
 
@@ -51,13 +53,16 @@ kill "$sampler"
 cat "$out/clean.log"
 report "$out/clean.mov" "$(awk '/first frame epoch/ { print $4 }' "$out/clean.log" | tr -d ,)"
 mkdir -p "$out/frames"
-ffmpeg -v error -i "$out/clean-remux.mp4" -vf fps=1 "$out/frames/%02d.png"
+limit 60 ffmpeg -v error -i "$out/clean-remux.mp4" -vf fps=1 "$out/frames/%02d.png"
+# Five frames a second while the pointer clicks, to find click rings.
+limit 60 ffmpeg -v error -ss 4 -t 6 -i "$out/clean-remux.mp4" -vf fps=5 "$out/frames/click-%02d.png"
 
 echo "== SIGKILL after 10 s"
-sleep 999 | "$out/sck-probe" "$out/killed.mov" 60 2> "$out/killed.log" &
+sleep 60 | "$out/sck-probe" "$out/killed.mov" 60 2> "$out/killed.log" &
 probe=$!
 sleep 10
-kill -9 "$probe"; wait "$probe" 2>/dev/null
+kill -9 "$probe"
+echo "killed"
 cat "$out/killed.log"
 ls -l "$out/killed.mov"
 report "$out/killed.mov" "$(awk '/first frame epoch/ { print $4 }' "$out/killed.log" | tr -d ,)"
