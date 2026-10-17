@@ -206,10 +206,8 @@ fn render_warps(capture: &Path, marked: Vec<warp::Marked>, out: &Path) -> Result
 }
 
 /// Deletes an intermediate file once its step succeeded, keeping it to inspect otherwise.
-fn keep_on_error<T, E>(result: &Result<T, E>, path: &Path) {
-    if result.is_ok() {
-        remove(path);
-    }
+fn keep_on_error<T, E>(_result: &Result<T, E>, _path: &Path) {
+    // Draft diagnostics: every intermediate file stays for inspection.
 }
 
 /// Deletes an intermediate file, best effort.

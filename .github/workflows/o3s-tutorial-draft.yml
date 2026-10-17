@@ -100,12 +100,20 @@ jobs:
           from-source: "true"
       - name: Diagnostics
         if: always()
-        run: .github/scripts/o3s-diagnostics.sh taperec/diagnostics
+        run: |
+          .github/scripts/o3s-diagnostics.sh taperec/diagnostics
+          for f in taperec/.*.ts taperec/.*.mp4; do
+            echo "== $f"
+            ffprobe -v error -show_entries format=start_time,duration -of default=nw=1 "$f"
+            ffprobe -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 "$f" | sort -n |
+              awk 'NR > 1 { gap = $1 - prev; if (gap > max) { max = gap; at = prev } } { prev = $1 } END { printf "frames %d, largest gap %.1f s after %s\n", NR, max, at }'
+          done 2>&1 | tee taperec/diagnostics/capture.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: o3s-tutorial-draft
           path: taperec/
+          include-hidden-files: true
           if-no-files-found: warn
 
   # Types the draft's long commands through taperec under each recorder setting, four runs each.
