@@ -7,7 +7,7 @@ on:
       run:
         description: What to record
         type: choice
-        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus]
+        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts]
         default: sections
       sections:
         description: Sections to record, a JSON list
@@ -227,3 +227,16 @@ jobs:
       - name: Focus facts
         timeout-minutes: 5
         run: .github/scripts/focus-facts.sh
+
+  # Records a static screen with taperec's capture settings and reports its timestamps.
+  pts-probe:
+    if: inputs.run == 'pts'
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Timestamp probe
+        timeout-minutes: 10
+        run: .github/scripts/pts-probe.sh out
