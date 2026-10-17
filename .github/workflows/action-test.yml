@@ -33,9 +33,18 @@ jobs:
       - name: Build the helper and the fixture
         run: |
           swift build -c release --package-path tools/desktop
+          swift build -c release --package-path tools/desktop --show-bin-path >> "$GITHUB_PATH"
           swiftc -O tests/fixtures/Fixture.swift -o "$RUNNER_TEMP/taperec-fixture"
+      # The desktop as the action leaves it for tapes.
+      - name: Settle the Dock
+        run: |
+          source action/main.sh
+          if crashing_icon_agent "$(target_triple "$RUNNER_ARCH")"; then icon_agent_off; fi
+          old=$(pgrep -x Dock)
+          killall Dock
+          wait_for_dock "$RUNNER_TEMP" "$old"
       - name: Check the desktop contract
-        run: tests/desktop-contract.sh "$(swift build -c release --package-path tools/desktop --show-bin-path)/taperec-desktop" "$RUNNER_TEMP/taperec-fixture"
+        run: tests/desktop-contract.sh "$(command -v taperec-desktop)" "$RUNNER_TEMP/taperec-fixture"
       - name: Screenshot
         if: failure()
         run: screencapture -x "$RUNNER_TEMP/desktop.png"

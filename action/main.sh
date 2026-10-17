@@ -127,7 +127,7 @@ icon_agent_off() {
 wait_for_dock() {
     local out=$1 old=$2 _
     for _ in $(seq 60); do
-        if [ "$(pgrep -x Dock)" != "$old" ] && limited 10 osascript -e 'tell application "System Events" to count UI elements of list 1 of process "Dock"' >/dev/null 2>&1; then
+        if [ "$(pgrep -x Dock)" != "$old" ] && limited 10 taperec-desktop dock >/dev/null 2>&1; then
             return
         fi
         sleep 1
