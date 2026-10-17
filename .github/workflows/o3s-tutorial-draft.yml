@@ -102,27 +102,28 @@ jobs:
           path: taperec/
           if-no-files-found: warn
 
-  # Types with keys held for a while versus released at once, under a real recording.
-  typer-probe:
+  # Types the draft's long commands through taperec under each recorder setting, four runs each.
+  typing-probe:
     if: inputs.run == 'typer'
     strategy:
       fail-fast: false
       matrix:
-        hold: [0, 15]
-        replica: [1, 2, 3, 4, 5, 6]
+        variant: [current, ultrafast, notune, nice]
+        replica: [1, 2, 3, 4]
     runs-on: macos-26-intel
     timeout-minutes: 20
     env:
-      TYPER_HOLD: ${{ matrix.hold }}
+      FFMPEG_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Build the typer
-        run: swiftc -O .github/scripts/typer.swift -o "$RUNNER_TEMP/typer"
+      - name: Recorder variant
+        run: echo "$GITHUB_WORKSPACE/.github/shim" >> "$GITHUB_PATH"
       - uses: $/
         with:
-          tapes: tutorials/typer-probe.tape
+          tapes: tutorials/typing-probe.tape
+          dock: Terminal
           from-source: "true"
       - name: Compare typed lines
         run: .github/scripts/typed-check.sh
