@@ -3,9 +3,6 @@
 import AppKit
 import ApplicationServices
 
-/// The longest one app may take to answer an accessibility query.
-let appAnswerLimit: Float = 0.5
-
 func copy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
@@ -33,11 +30,9 @@ func frame(_ element: AXUIElement) -> Frame? {
     return Frame(x: Int(point.x), y: Int(point.y), width: Int(extent.width), height: Int(extent.height))
 }
 
-/// An app's accessibility element, answering within [`appAnswerLimit`].
+/// An app's accessibility element; taperec bounds each query as a whole.
 func element(of app: NSRunningApplication) -> AXUIElement {
-    let element = AXUIElementCreateApplication(app.processIdentifier)
-    AXUIElementSetMessagingTimeout(element, appAnswerLimit)
-    return element
+    AXUIElementCreateApplication(app.processIdentifier)
 }
 
 /// Titles of the windows of regular apps.
