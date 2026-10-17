@@ -81,20 +81,26 @@ jobs:
   record:
     if: inputs.run == 'full'
     runs-on: macos-26-intel
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      # Quiet VS Code from its first start: no welcome page, trust prompt or chat panel.
       - name: VS Code settings
         run: |
           mkdir -p "$HOME/Library/Application Support/Code/User"
           cp config/Code/User/settings.json "$HOME/Library/Application Support/Code/User/settings.json"
+      - name: Screenshots
+        run: nohup .github/scripts/screenshots.sh taperec/shots > /dev/null 2>&1 &
       - uses: $/
         with:
           tapes: tutorials/o3s-draft.tape
           dock: Terminal
           from-source: "true"
+      - name: Diagnostics
+        if: always()
+        run: .github/scripts/o3s-diagnostics.sh taperec/diagnostics
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

@@ -6,6 +6,7 @@ Set TypingSpeed 35ms
 Sleep 1.5s
 Click dock:Terminal
 WaitWindow "sh" 30s
+Focus "Terminal"
 Sleep 1s
 
 # Docker Desktop, installed from the command line as Docker documents it.
@@ -17,23 +18,20 @@ EndWarp
 Paste "sudo hdiutil attach /tmp/Docker.dmg && sudo /Volumes/Docker/Docker.app/Contents/MacOS/install --accept-license --user=$USER && sudo hdiutil detach /Volumes/Docker"
 Key return
 Warp "Installing Docker Desktop" 2s
-WaitUntil "test -x /Applications/Docker.app/Contents/Resources/bin/docker && ! test -d /Volumes/Docker" 15m
+WaitUntil "test -x /Applications/Docker.app/Contents/Resources/bin/docker && ! test -d /Volumes/Docker" 10m
 EndWarp
 Paste "open /Applications/Docker.app"
 Key return
 Warp "Starting Docker" 2s
 WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker info" 10m
 EndWarp
-# Docker Desktop greets first-time users: allow local network access and skip the sign-in.
-Sleep 5s
-Click 1019,409
+# Docker Desktop asks to find devices on the local network.
+Click button:"Allow" 2m
 Sleep 1.5s
-Click 1188,343
-Sleep 2s
-# Hide Docker Desktop and carry on in Terminal.
+# Hide its welcome window and carry on in Terminal.
+Focus "Docker Desktop"
 Key cmd+h
-Sleep 1s
-Click 180,300
+Focus "Terminal"
 Sleep 1s
 Key cmd+k
 
@@ -41,7 +39,7 @@ Key cmd+k
 Paste "brew install --cask visual-studio-code"
 Key return
 Warp "Installing VS Code" 2s
-WaitUntil "test -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' && ! pgrep -f 'brew.rb'" 15m
+WaitUntil "test -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' && ! pgrep -f 'brew.rb'" 10m
 EndWarp
 Paste "code --install-extension ms-vscode-remote.remote-containers"
 Key return
@@ -50,17 +48,12 @@ WaitUntil "'/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code
 EndWarp
 Key cmd+k
 
-# o3s itself.
+# o3s itself; macOS asks once before opening an app downloaded from the internet.
 Paste "git clone https://github.com/Hansehart/o3s.git && code o3s"
 Key return
-# macOS asks once before opening an app downloaded from the internet.
-WaitUntil "osascript -e 'tell application \"System Events\" to exists window 1 of process \"CoreServicesUIAgent\"' | grep -q true" 3m
-Sleep 1.5s
-# The first click brings the dialog forward, the second presses Open.
-Click 1019,447
-Sleep 1s
-Click 1019,447
+Click button:"Open" 3m
 WaitWindow "o3s" 3m
+Focus "Visual Studio Code"
 Sleep 3s
 
 # Reopen in the cage; the build is long, so it plays fast-forwarded.
@@ -70,14 +63,16 @@ Paste "Dev Containers: Reopen in Container"
 Sleep 800ms
 Key return
 Warp "Building the cage" 5s
-WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker top \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" | grep -q vscode-server" 45m
-Sleep 15s
+# VS Code is connected once its extension host runs inside the cage.
+WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker exec \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" pgrep -f -- --type=extensionHost" 50m
 EndWarp
 Sleep 2s
 
 # Inside the cage only allow-listed hosts answer.
 Key ctrl+`
-Sleep 4s
+# The terminal is ready once its shell runs inside the cage.
+WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker exec \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" pgrep -f -- '--init-file .*shellIntegration'" 2m
+Sleep 1s
 Paste "curl -sI https://github.com | head -1"
 Key return
 Sleep 2s
