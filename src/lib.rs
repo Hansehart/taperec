@@ -1,10 +1,11 @@
-//! Records scripted desktop tutorials from `.tape` files.
+//! Records scripted desktop tutorials from YAML tapes.
 
 pub mod app;
 pub mod cli;
 pub mod desktop;
 pub mod motion;
-mod process;
+pub mod platform;
+pub mod process;
 pub mod recorder;
 pub mod tape;
 mod units;

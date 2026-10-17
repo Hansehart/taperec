@@ -9,7 +9,9 @@ use std::process;
 use std::time::{Duration, SystemTime};
 
 use crate::cli::Args;
-use crate::desktop::{Desktop, SystemRunner};
+use crate::desktop::Desktop;
+use crate::platform::macos::MacScripts;
+use crate::process::SystemRunner;
 use crate::recorder::Recording;
 use crate::{desktop, recorder, tape, warp};
 
@@ -145,7 +147,7 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
         detail: e.to_string(),
     })?;
 
-    let mut desktop = Desktop::new(SystemRunner::default());
+    let mut desktop = Desktop::new(MacScripts::new(SystemRunner::default()));
     let path = args.out_dir.join(tape.output.as_str());
     // The raw capture, timeline and captions stay next to the video, for `taperec render`.
     let stem = tape.output.as_str().trim_end_matches(".mp4");

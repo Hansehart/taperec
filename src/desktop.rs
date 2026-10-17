@@ -1,346 +1,45 @@
-//! Plays tape steps on the macOS desktop through `cliclick` and `osascript`.
+//! Plays tape steps on a desktop: timing, glides and waits, through a [`Platform`].
 
-use std::fmt;
-use std::io;
 use std::num::NonZeroU32;
-use std::os::unix::process::CommandExt;
-use std::process;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::Duration;
 
 use crate::motion;
+pub use crate::platform::Error;
+use crate::platform::{pick_control, Platform};
 use crate::tape::{
-    AppName, ControlLabel, DockItem, Key, KeyChord, Point, ShellCommand, Step, Target, WindowName,
+    AppName, ControlLabel, DockItem, KeyChord, Point, ShellCommand, Step, Target, WindowName,
 };
-use crate::units;
 
 /// Pointer updates per second while gliding.
 const MOVE_RATE_HZ: u32 = 60;
-/// cliclick's message for a character outside the keyboard layout.
-const UNTYPABLE: &str = "Unable to get key code for";
-/// A pause after each keystroke, which cliclick only delivers when a command follows it.
-const KEY_SETTLE: &str = "w:20";
-/// How often `WaitWindow` polls for its window.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How often waits on the screen poll.
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// The longest a step runs between checks that the recording is alive.
 const ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 /// How often `WaitUntil` reruns its command.
-const UNTIL_POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub(crate) const UNTIL_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Lists every named Dock item as `name<TAB>x<TAB>y<TAB>width<TAB>height`, one per line.
-const DOCK_SCRIPT: &[&str] = &[
-    "set out to \"\"",
-    "tell application \"System Events\" to tell process \"Dock\"",
-    "repeat with e in UI elements of list 1",
-    "set n to name of e",
-    "if n is not missing value then",
-    "set {x, y} to position of e",
-    "set {w, h} to size of e",
-    "set out to out & n & tab & x & tab & y & tab & w & tab & h & linefeed",
-    "end if",
-    "end repeat",
-    "end tell",
-    "return out",
-];
-
-/// Lists the labelled buttons of every window, two groups deep, as
-/// `process<TAB>frontmost<TAB>label<TAB>x<TAB>y<TAB>width<TAB>height`, one per line.
-const CONTROLS_SCRIPT: &[&str] = &[
-    "on controls(e, p, f, depth)",
-    "set out to \"\"",
-    "tell application \"System Events\"",
-    "repeat with b in (buttons of e)",
-    "set n to name of b",
-    "if n is not missing value then",
-    "set {x, y} to position of b",
-    "set {w, h} to size of b",
-    "set out to out & p & tab & f & tab & n & tab & x & tab & y & tab & w & tab & h & linefeed",
-    "end if",
-    "end repeat",
-    "if depth < 3 then",
-    "repeat with g in (groups of e)",
-    "set out to out & my controls(g, p, f, depth + 1)",
-    "end repeat",
-    "end if",
-    "end tell",
-    "return out",
-    "end controls",
-    "set out to \"\"",
-    "tell application \"System Events\" to set ps to every process",
-    "repeat with p in ps",
-    "try",
-    "tell application \"System Events\" to set {appName, f, ws} to {name, frontmost, windows} of p",
-    "repeat with w in ws",
-    "set out to out & my controls(w, appName, f, 1)",
-    "end repeat",
-    "end try",
-    "end repeat",
-    "return out",
-];
-
-/// Brings the app named by the first argument to the front and reports whether it is there.
-const FOCUS_SCRIPT: &[&str] = &[
-    "on run argv",
-    "set appName to item 1 of argv",
-    "tell application appName to activate",
-    "set wanted to id of application appName",
-    "tell application \"System Events\" to set frontId to bundle identifier of first process whose frontmost is true",
-    "return wanted is frontId",
-    "end run",
-];
-
-/// Puts the first argument on the clipboard.
-const CLIPBOARD_SCRIPT: &[&str] = &[
-    "on run argv",
-    "set the clipboard to item 1 of argv",
-    "end run",
-];
-
-/// Lists the named windows of foreground processes, one title per line.
-///
-/// A process that comes or goes while the list is read is skipped, so a launching app never fails the wait.
-const WINDOWS_SCRIPT: &[&str] = &[
-    "set out to \"\"",
-    "tell application \"System Events\" to set ps to every process whose background only is false",
-    "repeat with p in ps",
-    "try",
-    "tell application \"System Events\" to set ts to name of every window of p",
-    "repeat with t in ts",
-    "if t is not missing value then set out to out & t & linefeed",
-    "end repeat",
-    "end try",
-    "end repeat",
-    "return out",
-];
-
-/// Runs external programs and keeps time.
-pub trait Runner {
-    /// Runs `program` with `args` to completion within `limit`, returning its output.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Spawn`] for a failed start, [`Error::Exit`] for a failing exit
-    /// status, [`Error::TimedOut`] once `limit` passes.
-    fn run(
-        &mut self,
-        program: &str,
-        args: &[&str],
-        limit: Option<Duration>,
-    ) -> Result<Output, Error>;
-
-    /// Waits for `duration`.
-    fn sleep(&mut self, duration: Duration);
-
-    /// Monotonic time since the runner was created.
-    fn elapsed(&mut self) -> Duration;
-}
-
-/// What a finished program printed.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Output {
-    /// Standard output.
-    pub stdout: String,
-    /// Standard error.
-    pub stderr: String,
-}
-
-/// Runs real processes on the system clock.
-#[derive(Debug)]
-pub struct SystemRunner {
-    created: Instant,
-}
-
-impl Default for SystemRunner {
-    fn default() -> Self {
-        Self {
-            created: Instant::now(),
-        }
-    }
-}
-
-impl Runner for SystemRunner {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "SystemRunner is the seam that starts processes"
-    )]
-    fn run(
-        &mut self,
-        program: &str,
-        args: &[&str],
-        limit: Option<Duration>,
-    ) -> Result<Output, Error> {
-        let command = || command_line(program, args);
-        // Its own process group lets a timeout end everything the program started.
-        let mut child = process::Command::new(program)
-            .args(args)
-            .process_group(0)
-            .stdin(process::Stdio::null())
-            .stdout(process::Stdio::piped())
-            .stderr(process::Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::Spawn {
-                command: command(),
-                detail: e.to_string(),
-            })?;
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-        let waited = crate::process::wait_within(&mut child, limit).map_err(|e| Error::Spawn {
-            command: command(),
-            detail: e.to_string(),
-        })?;
-        let Some(status) = waited else {
-            let group = format!("-{}", child.id());
-            let _ = process::Command::new("kill")
-                .args(["-KILL", "--", &group])
-                .status();
-            let _ = child.wait();
-            // The pipes close once every process in the group has ended.
-            let _ = (stdout.join(), stderr.join());
-            return Err(Error::TimedOut { command: command() });
-        };
-        let output = Output {
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        };
-        if status.success() {
-            Ok(output)
-        } else {
-            Err(Error::Exit {
-                command: command(),
-                code: status.code(),
-                stderr: output.stderr.trim().to_owned(),
-            })
-        }
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "SystemRunner is the seam that really sleeps"
-    )]
-    fn sleep(&mut self, duration: Duration) {
-        thread::sleep(duration);
-    }
-
-    fn elapsed(&mut self) -> Duration {
-        self.created.elapsed()
-    }
-}
-
-/// Why a step failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
-    /// A program that failed to start.
-    Spawn {
-        /// The command line.
-        command: String,
-        /// The I/O error.
-        detail: String,
-    },
-    /// A program exited unsuccessfully.
-    Exit {
-        /// The command line.
-        command: String,
-        /// Its exit code, or `None` if a signal ended it.
-        code: Option<i32>,
-        /// Its stderr output.
-        stderr: String,
-    },
-    /// A step stopped because its recording ended.
-    Interrupted,
-    /// Text outside the keyboard layout.
-    Untypable {
-        /// The text.
-        text: String,
-        /// cliclick's message.
-        detail: String,
-    },
-    /// A program that ran past its time limit and was stopped.
-    TimedOut {
-        /// The command line.
-        command: String,
-    },
-    /// Program output in an unexpected shape.
-    UnexpectedOutput {
-        /// What the output describes.
-        what: &'static str,
-        /// The output.
-        output: String,
-    },
-    /// A `dock:` name missing from the Dock.
-    NotInDock(String),
-    /// A `WaitWindow` that reached its timeout.
-    WindowNotFound(String),
-    /// A `WaitUntil` that reached its timeout.
-    ConditionNotMet(String),
-    /// A `button:` label that no window showed in time.
-    ControlNotFound(String),
-    /// A `button:` label shown by several apps, none of them frontmost.
-    AmbiguousControl {
-        /// The label.
-        label: String,
-        /// The apps showing it.
-        apps: Vec<String>,
-    },
-    /// A `Focus` app that never came to the front.
-    NotFrontmost(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Spawn { command, detail } => write!(f, "could not run `{command}`: {detail}"),
-            Self::Exit {
-                command,
-                code: Some(code),
-                stderr,
-            } => write!(f, "`{command}` exited with {code}: {stderr}"),
-            Self::Exit {
-                command,
-                code: None,
-                stderr,
-            } => write!(f, "`{command}` was killed: {stderr}"),
-            Self::UnexpectedOutput { what, output } => {
-                write!(f, "could not read {what} from {output:?}")
-            }
-            Self::Interrupted => write!(f, "the recording ended during the step"),
-            Self::Untypable { text, detail } => write!(f, "cannot type {text:?}: {detail}"),
-            Self::TimedOut { command } => write!(f, "`{command}` ran past its time limit"),
-            Self::NotInDock(name) => write!(f, "{name} is not in the Dock"),
-            Self::WindowNotFound(name) => write!(f, "no window matching {name:?} appeared"),
-            Self::ConditionNotMet(command) => write!(f, "`{command}` never succeeded"),
-            Self::ControlNotFound(label) => write!(f, "no button labelled {label:?} appeared"),
-            Self::AmbiguousControl { label, apps } => write!(
-                f,
-                "a button labelled {label:?} shows in {}; bring one to the front with `Focus`",
-                apps.join(", ")
-            ),
-            Self::NotFrontmost(app) => write!(f, "{app} did not come to the front"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Drives the desktop, tracking speed settings between steps.
-pub struct Desktop<R: Runner> {
-    runner: R,
+/// Drives a desktop, tracking speed settings between steps.
+pub struct Desktop<P: Platform> {
+    platform: P,
     typing_delay: Duration,
     move_duration: Duration,
 }
 
-impl<R: Runner> Desktop<R> {
+impl<P: Platform> Desktop<P> {
     /// A desktop typing at 50 ms per key and gliding in 600 ms.
-    pub fn new(runner: R) -> Self {
+    pub fn new(platform: P) -> Self {
         Self {
-            runner,
+            platform,
             typing_delay: Duration::from_millis(50),
             move_duration: Duration::from_millis(600),
         }
     }
 
-    /// Consumes the desktop, returning its runner.
-    pub fn into_runner(self) -> R {
-        self.runner
+    /// Consumes the desktop, returning its platform.
+    pub fn into_platform(self) -> P {
+        self.platform
     }
 
     /// Plays one step, ending it early once `alive` reports false.
@@ -360,8 +59,7 @@ impl<R: Runner> Desktop<R> {
             Step::MoveTo(target) => self.glide(target, alive)?,
             Step::Click(target) => {
                 self.glide(target, alive)?;
-                // `.` is the current position.
-                self.cliclick(&["c:."])?;
+                self.platform.click()?;
             }
             Step::WaitWindow { name, timeout } => self.wait_window(name, *timeout, alive)?,
             Step::WaitUntil { command, timeout } => self.wait_until(command, *timeout, alive)?,
@@ -369,7 +67,7 @@ impl<R: Runner> Desktop<R> {
             // Warps mark the recording; the caller times them.
             Step::Warp { .. } | Step::EndWarp => {}
             Step::Type(text) => self.type_text(text)?,
-            Step::Paste(text) => self.paste(text)?,
+            Step::Paste(text) => self.platform.paste(text)?,
             Step::Key(chord) => self.press(chord)?,
         }
         Ok(())
@@ -379,7 +77,7 @@ impl<R: Runner> Desktop<R> {
     ///
     /// # Errors
     ///
-    /// Fails if cliclick or osascript fails, or a wait times out.
+    /// Fails if the platform fails or a wait times out.
     pub fn play(&mut self, step: &Step) -> Result<(), Error> {
         self.play_while(step, &mut || true)
     }
@@ -388,11 +86,9 @@ impl<R: Runner> Desktop<R> {
     ///
     /// # Errors
     ///
-    /// Fails if screencapture fails.
+    /// Fails if the capture fails.
     pub fn screenshot(&mut self, path: &str) -> Result<(), Error> {
-        self.runner
-            .run("screencapture", &["-x", path], None)
-            .map(drop)
+        self.platform.screenshot(Path::new(path))
     }
 
     /// Sleeps for `duration` in slices of at most [`ALIVE_INTERVAL`], checking `alive` before each.
@@ -401,81 +97,41 @@ impl<R: Runner> Desktop<R> {
         duration: Duration,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        let start = self.runner.elapsed();
+        let start = self.platform.elapsed();
         loop {
             if !alive() {
                 return Err(Error::Interrupted);
             }
-            let left = duration.saturating_sub(self.runner.elapsed().saturating_sub(start));
+            let left = duration.saturating_sub(self.platform.elapsed().saturating_sub(start));
             if left.is_zero() {
                 return Ok(());
             }
-            self.runner.sleep(left.min(ALIVE_INTERVAL));
+            self.platform.sleep(left.min(ALIVE_INTERVAL));
         }
     }
 
-    /// Sleeps until `offset` after `start` on the runner's clock.
+    /// Sleeps until `offset` after `start` on the platform's clock.
     fn sleep_until(&mut self, start: Duration, offset: Duration) {
-        let passed = self.runner.elapsed().saturating_sub(start);
+        let passed = self.platform.elapsed().saturating_sub(start);
         let remaining = offset.saturating_sub(passed);
         if !remaining.is_zero() {
-            self.runner.sleep(remaining);
+            self.platform.sleep(remaining);
         }
     }
 
-    fn cliclick(&mut self, commands: &[&str]) -> Result<Output, Error> {
-        self.runner.run("cliclick", commands, None)
-    }
-
-    /// Types `text` one keystroke per cliclick run, paced by the typing delay.
+    /// Types `text` one character at a time, paced by the typing delay.
     fn type_text(&mut self, text: &str) -> Result<(), Error> {
-        let start = self.runner.elapsed();
+        let start = self.platform.elapsed();
         for (i, c) in (0u32..).zip(text.chars()) {
             // Keystroke `i` starts `i` typing delays in.
             self.sleep_until(start, self.typing_delay.saturating_mul(i));
-            let output = match c {
-                '\n' => self.cliclick(&["kp:return", KEY_SETTLE])?,
-                '\t' => self.cliclick(&["kp:tab", KEY_SETTLE])?,
-                c => self.cliclick(&[&format!("t:{c}"), KEY_SETTLE])?,
-            };
-            let detail = output.stderr.trim();
-            if detail.contains(UNTYPABLE) {
-                return Err(Error::Untypable {
-                    text: c.to_string(),
-                    detail: detail.to_owned(),
-                });
-            }
+            self.platform.type_char(c)?;
         }
         Ok(())
     }
 
-    /// Puts `text` on the clipboard and pastes it with `cmd+v`, one keystroke however long the text.
-    fn paste(&mut self, text: &str) -> Result<(), Error> {
-        let mut args = osascript_args(CLIPBOARD_SCRIPT);
-        args.push(text);
-        self.runner.run("osascript", &args, None)?;
-        self.cliclick(&["kd:cmd", "t:v", "ku:cmd"]).map(drop)
-    }
-
-    /// Holds the chord's modifiers, presses its key, and releases them.
     fn press(&mut self, chord: &KeyChord) -> Result<(), Error> {
-        let modifiers = chord
-            .modifiers()
-            .iter()
-            .map(|m| m.cliclick_name())
-            .collect::<Vec<_>>()
-            .join(",");
-        let key = match chord.key() {
-            Key::Named(name) => format!("kp:{name}"),
-            Key::Char(c) => format!("t:{c}"),
-        };
-        if modifiers.is_empty() {
-            self.cliclick(&[&key, KEY_SETTLE])?;
-        } else {
-            let (down, up) = (format!("kd:{modifiers}"), format!("ku:{modifiers}"));
-            self.cliclick(&[&down, &key, &up])?;
-        }
-        Ok(())
+        self.platform.key(chord)
     }
 
     /// Moves the pointer to `target` along an eased path at [`MOVE_RATE_HZ`].
@@ -485,46 +141,24 @@ impl<R: Runner> Desktop<R> {
             Target::Dock(item) => self.dock_point(item)?,
             Target::Control { label, timeout } => self.control_point(label, *timeout, alive)?,
         };
-        let from = self.pointer()?;
+        let from = self.platform.pointer()?;
         let ticks = self.move_duration.as_millis() * u128::from(MOVE_RATE_HZ) / 1000;
         let steps =
             NonZeroU32::new(u32::try_from(ticks).unwrap_or(u32::MAX)).unwrap_or(NonZeroU32::MIN);
-        let start = self.runner.elapsed();
+        let start = self.platform.elapsed();
         for (i, point) in (1..=steps.get()).zip(motion::path(from, to, steps)) {
             // Each move is due at a fixed offset from the glide's start.
             let due = self.move_duration * i / steps.get();
             self.sleep_until(start, due);
-            self.cliclick(&[&format!("m:{},{}", point.x, point.y)])?;
+            self.platform.move_to(point)?;
         }
         Ok(())
     }
 
-    /// Reads the pointer's `x,y` from `cliclick p`.
-    fn pointer(&mut self) -> Result<Point, Error> {
-        let output = self.cliclick(&["p"])?.stdout;
-        let point = output.trim().split_once(',').and_then(|(x, y)| {
-            Some(Point {
-                x: units::natural(x)?,
-                y: units::natural(y)?,
-            })
-        });
-        point.ok_or(Error::UnexpectedOutput {
-            what: "pointer location",
-            output,
-        })
-    }
-
     /// The centre of `item`'s icon, from the Dock's own geometry.
     fn dock_point(&mut self, item: &DockItem) -> Result<Point, Error> {
-        let output = self
-            .runner
-            .run("osascript", &osascript_args(DOCK_SCRIPT), None)?
-            .stdout;
-        let items = parse_dock(&output).ok_or(Error::UnexpectedOutput {
-            what: "Dock items",
-            output,
-        })?;
-        items
+        self.platform
+            .dock()?
             .into_iter()
             .find_map(|(name, centre)| (name == item.name()).then_some(centre))
             .ok_or_else(|| Error::NotInDock(item.name().to_owned()))
@@ -539,918 +173,402 @@ impl<R: Runner> Desktop<R> {
         timeout: Duration,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<Point, Error> {
-        let args = osascript_args(CONTROLS_SCRIPT);
-        let mut found = None;
-        self.poll(
-            "osascript",
-            &args,
-            POLL_INTERVAL,
-            timeout,
-            alive,
-            |attempt| {
-                let output = attempt?.stdout;
-                let controls = parse_controls(&output).ok_or(Error::UnexpectedOutput {
-                    what: "on-screen buttons",
-                    output: output.clone(),
-                })?;
-                found = pick_control(&controls, label.as_str())?;
-                Ok(found.is_some())
-            },
-        )?;
-        found.ok_or_else(|| Error::ControlNotFound(label.as_str().to_owned()))
+        self.poll(POLL_INTERVAL, timeout, alive, |platform, limit| {
+            pick_control(&platform.buttons(limit)?, label.as_str())
+        })?
+        .ok_or_else(|| Error::ControlNotFound(label.as_str().to_owned()))
     }
 
-    /// Activates `app` and polls until macOS reports it frontmost.
+    /// Activates `app` and polls until the platform reports it frontmost.
     fn focus(
         &mut self,
         app: &AppName,
         timeout: Duration,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        let mut args = osascript_args(FOCUS_SCRIPT);
-        args.push(app.as_str());
-        let focused = self.poll(
-            "osascript",
-            &args,
-            POLL_INTERVAL,
-            timeout,
-            alive,
-            |attempt| attempt.map(|output| output.stdout.trim() == "true"),
-        )?;
-        if focused {
-            Ok(())
-        } else {
-            Err(Error::NotFrontmost(app.as_str().to_owned()))
-        }
+        self.poll(POLL_INTERVAL, timeout, alive, |platform, limit| {
+            Ok(platform.focus(app, limit)?.then_some(()))
+        })?
+        .ok_or_else(|| Error::NotFrontmost(app.as_str().to_owned()))
     }
 
-    /// Polls until a foreground window's title contains `name`, ignoring case.
+    /// Polls until a visible window's title contains `name`, ignoring case.
     fn wait_window(
         &mut self,
         name: &WindowName,
         timeout: Duration,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        let args = osascript_args(WINDOWS_SCRIPT);
         let needle = name.as_str().to_lowercase();
-        let found = self.poll(
-            "osascript",
-            &args,
-            POLL_INTERVAL,
-            timeout,
-            alive,
-            |attempt| {
-                attempt.map(|output| {
-                    output
-                        .stdout
-                        .lines()
-                        .any(|title| title.to_lowercase().contains(&needle))
-                })
-            },
-        )?;
-        if found {
-            Ok(())
-        } else {
-            Err(Error::WindowNotFound(name.as_str().to_owned()))
-        }
+        self.poll(POLL_INTERVAL, timeout, alive, |platform, limit| {
+            let titles = platform.windows(limit)?;
+            Ok(titles
+                .iter()
+                .any(|title| title.to_lowercase().contains(&needle))
+                .then_some(()))
+        })?
+        .ok_or_else(|| Error::WindowNotFound(name.as_str().to_owned()))
     }
 
-    /// Polls `sh -c <command>` until it exits 0.
+    /// Polls the shell command until it succeeds.
     fn wait_until(
         &mut self,
         command: &ShellCommand,
         timeout: Duration,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        let args = ["-c", command.as_str()];
-        // A failing exit status means try again; a failed start ends the wait.
-        let found = self.poll(
-            "sh",
-            &args,
-            UNTIL_POLL_INTERVAL,
-            timeout,
-            alive,
-            |attempt| match attempt {
-                Ok(_) => Ok(true),
-                Err(Error::Exit { .. }) => Ok(false),
-                Err(e) => Err(e),
-            },
-        )?;
-        if found {
-            Ok(())
-        } else {
-            Err(Error::ConditionNotMet(command.as_str().to_owned()))
-        }
+        self.poll(UNTIL_POLL_INTERVAL, timeout, alive, |platform, limit| {
+            Ok(platform.shell(command, limit)?.then_some(()))
+        })?
+        .ok_or_else(|| Error::ConditionNotMet(command.as_str().to_owned()))
     }
 
-    /// Reruns `program args` every `interval` until `done` accepts an attempt or `timeout` passes.
-    fn poll(
+    /// Reruns `attempt` every `interval` until it finds something or `timeout` passes.
+    ///
+    /// Each attempt gets the time left as its limit; one cut off at the deadline ends the wait.
+    fn poll<T>(
         &mut self,
-        program: &str,
-        args: &[&str],
         interval: Duration,
         timeout: Duration,
         alive: &mut dyn FnMut() -> bool,
-        mut done: impl FnMut(Result<Output, Error>) -> Result<bool, Error>,
-    ) -> Result<bool, Error> {
-        let deadline = self.runner.elapsed().saturating_add(timeout);
+        mut attempt: impl FnMut(&mut P, Option<Duration>) -> Result<Option<T>, Error>,
+    ) -> Result<Option<T>, Error> {
+        let deadline = self.platform.elapsed().saturating_add(timeout);
         loop {
             if !alive() {
                 return Err(Error::Interrupted);
             }
-            let left = deadline.saturating_sub(self.runner.elapsed());
-            match self.runner.run(program, args, Some(left)) {
-                // An attempt cut off at the deadline ends the wait.
-                Err(Error::TimedOut { .. }) => return Ok(false),
-                attempt => {
-                    if done(attempt)? {
-                        return Ok(true);
-                    }
-                }
+            let left = deadline.saturating_sub(self.platform.elapsed());
+            match attempt(&mut self.platform, Some(left)) {
+                Err(Error::TimedOut { .. }) => return Ok(None),
+                Err(error) => return Err(error),
+                Ok(Some(found)) => return Ok(Some(found)),
+                Ok(None) => {}
             }
-            let now = self.runner.elapsed();
+            let now = self.platform.elapsed();
             if now >= deadline {
-                return Ok(false);
+                return Ok(None);
             }
-            self.runner
+            self.platform
                 .sleep(interval.min(deadline.saturating_sub(now)));
         }
     }
 }
 
-/// `program args…` as one line, for messages and logs.
-fn command_line(program: &str, args: &[&str]) -> String {
-    std::iter::once(program)
-        .chain(args.iter().copied())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Reads a pipe to its end on its own thread, keeping the program's output flowing.
-fn drain(pipe: Option<impl io::Read + Send + 'static>) -> thread::JoinHandle<String> {
-    thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(mut pipe) = pipe {
-            let mut bytes = Vec::new();
-            // A read error leaves whatever arrived before it.
-            let _ = pipe.read_to_end(&mut bytes);
-            text = String::from_utf8_lossy(&bytes).into_owned();
-        }
-        text
-    })
-}
-
-/// `osascript` arguments that run `lines` as one script.
-fn osascript_args<'a>(lines: &[&'a str]) -> Vec<&'a str> {
-    lines.iter().flat_map(|line| ["-e", line]).collect()
-}
-
-/// A labelled button as [`CONTROLS_SCRIPT`] reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Control {
-    app: String,
-    frontmost: bool,
-    label: String,
-    centre: Point,
-}
-
-/// Parses [`CONTROLS_SCRIPT`] output.
-fn parse_controls(text: &str) -> Option<Vec<Control>> {
-    text.lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let mut fields = line.split('\t');
-            let app = fields.next()?.to_owned();
-            let frontmost = match fields.next()? {
-                "true" => true,
-                "false" => false,
-                _ => return None,
-            };
-            let label = fields.next()?.to_owned();
-            let mut number = || fields.next().and_then(units::natural::<u32>);
-            let (x, y, w, h) = (number()?, number()?, number()?, number()?);
-            if fields.next().is_some() {
-                return None;
-            }
-            let centre = Point {
-                x: x.checked_add(w / 2)?,
-                y: y.checked_add(h / 2)?,
-            };
-            Some(Control {
-                app,
-                frontmost,
-                label,
-                centre,
-            })
-        })
-        .collect()
-}
-
-/// The centre of the button labelled `label`: the frontmost app's, or the only app's showing it.
-fn pick_control(controls: &[Control], label: &str) -> Result<Option<Point>, Error> {
-    let matches: Vec<&Control> = controls.iter().filter(|c| c.label == label).collect();
-    if let Some(front) = matches.iter().find(|c| c.frontmost) {
-        return Ok(Some(front.centre));
-    }
-    let mut apps: Vec<String> = matches.iter().map(|c| c.app.clone()).collect();
-    apps.sort();
-    apps.dedup();
-    match apps.len() {
-        0 => Ok(None),
-        1 => Ok(matches.first().map(|c| c.centre)),
-        _ => Err(Error::AmbiguousControl {
-            label: label.to_owned(),
-            apps,
-        }),
-    }
-}
-
-/// Parses [`DOCK_SCRIPT`] output into names and icon centres.
-fn parse_dock(text: &str) -> Option<Vec<(String, Point)>> {
-    text.lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let mut fields = line.split('\t');
-            let name = fields.next()?;
-            let mut number = || fields.next().and_then(units::natural::<u32>);
-            let (x, y, w, h) = (number()?, number()?, number()?, number()?);
-            if fields.next().is_some() {
-                return None;
-            }
-            let centre = Point {
-                x: x.checked_add(w / 2)?,
-                y: y.checked_add(h / 2)?,
-            };
-            Some((name.to_owned(), centre))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::*;
+    use crate::platform::Control;
     use crate::tape;
 
-    /// Records every call and replies from a script of canned outputs.
+    /// What the player asked the platform to do.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Call {
+        MoveTo(Point),
+        Click,
+        Key(String),
+        Type(char),
+        Paste(String),
+        Windows,
+        Buttons,
+        Dock,
+        Focus(String),
+        Shell(String),
+    }
+
+    /// A platform that records typed calls, answers queries from queues and keeps virtual time.
     #[derive(Default)]
-    struct Fake {
-        calls: Vec<String>,
-        replies: Vec<(&'static str, Result<Output, Error>)>,
-        slept: Duration,
-        /// Virtual time, advanced by `sleep` and by `run_cost` per `run`.
+    struct FakePlatform {
+        calls: Vec<Call>,
         clock: Duration,
-        run_cost: Duration,
+        /// Virtual time each query takes.
+        query_cost: Duration,
+        windows: VecDeque<Vec<String>>,
+        buttons: VecDeque<Vec<Control>>,
+        dock: Vec<(String, Point)>,
+        focus: VecDeque<bool>,
+        shell: VecDeque<bool>,
     }
 
-    impl Fake {
-        fn answer(mut self, prefix: &'static str, stdout: &str, stderr: &str) -> Self {
-            let output = Output {
-                stdout: stdout.into(),
-                stderr: stderr.into(),
-            };
-            self.replies.push((prefix, Ok(output)));
-            self
-        }
-
-        fn reply(self, prefix: &'static str, stdout: &str) -> Self {
-            self.answer(prefix, stdout, "")
-        }
-
-        fn warn(self, prefix: &'static str, stderr: &str) -> Self {
-            self.answer(prefix, "", stderr)
-        }
-
-        fn exit(mut self, prefix: &'static str, code: i32) -> Self {
-            let error = Error::Exit {
-                command: prefix.into(),
-                code: Some(code),
-                stderr: String::new(),
-            };
-            self.replies.push((prefix, Err(error)));
-            self
-        }
-    }
-
-    impl Runner for Fake {
-        fn run(
-            &mut self,
-            program: &str,
-            args: &[&str],
-            limit: Option<Duration>,
-        ) -> Result<Output, Error> {
-            // osascript calls are logged by script name.
-            let line = if program == "osascript" {
-                let scripts = [
-                    ("dock", DOCK_SCRIPT),
-                    ("windows", WINDOWS_SCRIPT),
-                    ("controls", CONTROLS_SCRIPT),
-                    ("focus", FOCUS_SCRIPT),
-                    ("clipboard", CLIPBOARD_SCRIPT),
-                ];
-                let (name, rest) = scripts
-                    .iter()
-                    .find_map(|(name, script)| {
-                        let script = osascript_args(script);
-                        args.starts_with(&script)
-                            .then(|| (*name, &args[script.len()..]))
-                    })
-                    .unwrap_or(("unknown", &[]));
-                [&["osascript", name][..], rest].concat().join(" ")
-            } else {
-                command_line(program, args)
-            };
-            self.calls.push(line.clone());
-            if let Some(limit) = limit.filter(|limit| self.run_cost > *limit) {
+    impl FakePlatform {
+        /// Spends one query's time, failing like a real query cut off at `limit`.
+        fn query(&mut self, call: Call, limit: Option<Duration>) -> Result<(), Error> {
+            self.calls.push(call);
+            if let Some(limit) = limit.filter(|limit| self.query_cost > *limit) {
                 self.clock += limit;
-                return Err(Error::TimedOut { command: line });
+                return Err(Error::TimedOut {
+                    command: "query".into(),
+                });
             }
-            self.clock += self.run_cost;
-            match self
-                .replies
-                .iter()
-                .position(|(prefix, _)| line.starts_with(prefix))
-            {
-                Some(i) => self.replies.remove(i).1,
-                None => Ok(Output::default()),
-            }
+            self.clock += self.query_cost;
+            Ok(())
         }
+    }
 
+    impl Platform for FakePlatform {
         fn sleep(&mut self, duration: Duration) {
-            self.slept += duration;
             self.clock += duration;
         }
 
         fn elapsed(&mut self) -> Duration {
             self.clock
         }
+
+        fn pointer(&mut self) -> Result<Point, Error> {
+            Ok(Point { x: 0, y: 0 })
+        }
+
+        fn move_to(&mut self, point: Point) -> Result<(), Error> {
+            self.calls.push(Call::MoveTo(point));
+            Ok(())
+        }
+
+        fn click(&mut self) -> Result<(), Error> {
+            self.calls.push(Call::Click);
+            Ok(())
+        }
+
+        fn key(&mut self, chord: &KeyChord) -> Result<(), Error> {
+            self.calls.push(Call::Key(format!("{chord:?}")));
+            Ok(())
+        }
+
+        fn type_char(&mut self, c: char) -> Result<(), Error> {
+            self.calls.push(Call::Type(c));
+            Ok(())
+        }
+
+        fn paste(&mut self, text: &str) -> Result<(), Error> {
+            self.calls.push(Call::Paste(text.into()));
+            Ok(())
+        }
+
+        fn windows(&mut self, limit: Option<Duration>) -> Result<Vec<String>, Error> {
+            self.query(Call::Windows, limit)?;
+            Ok(self.windows.pop_front().unwrap_or_default())
+        }
+
+        fn buttons(&mut self, limit: Option<Duration>) -> Result<Vec<Control>, Error> {
+            self.query(Call::Buttons, limit)?;
+            Ok(self.buttons.pop_front().unwrap_or_default())
+        }
+
+        fn dock(&mut self) -> Result<Vec<(String, Point)>, Error> {
+            self.calls.push(Call::Dock);
+            Ok(self.dock.clone())
+        }
+
+        fn focus(&mut self, app: &AppName, limit: Option<Duration>) -> Result<bool, Error> {
+            self.query(Call::Focus(app.as_str().into()), limit)?;
+            Ok(self.focus.pop_front().unwrap_or(false))
+        }
+
+        fn shell(
+            &mut self,
+            command: &ShellCommand,
+            limit: Option<Duration>,
+        ) -> Result<bool, Error> {
+            self.query(Call::Shell(command.as_str().into()), limit)?;
+            Ok(self.shell.pop_front().unwrap_or(false))
+        }
+
+        fn screenshot(&mut self, _path: &Path) -> Result<(), Error> {
+            Ok(())
+        }
     }
 
-    /// Steps built through the parser.
-    fn steps(body: &str) -> Vec<Step> {
-        tape::parse(&format!("output: t.mp4\nsteps:\n{body}"))
+    fn play(platform: FakePlatform, items: &str) -> Result<FakePlatform, Error> {
+        let steps = tape::parse(&format!("output: t.mp4\nsteps:\n{items}"))
             .unwrap()
-            .steps
-    }
-
-    fn play(fake: Fake, body: &str) -> Result<Fake, Error> {
-        let mut desktop = Desktop::new(fake);
-        for step in &steps(body) {
+            .steps;
+        let mut desktop = Desktop::new(platform);
+        for step in &steps {
             desktop.play(step)?;
         }
-        Ok(desktop.into_runner())
+        Ok(desktop.into_platform())
     }
 
-    fn moves(fake: &Fake) -> Vec<&str> {
-        fake.calls
+    fn button(app: &str, frontmost: bool, label: &str, x: u32, y: u32) -> Control {
+        Control {
+            app: app.into(),
+            frontmost,
+            label: label.into(),
+            centre: Point { x, y },
+        }
+    }
+
+    fn moves(platform: &FakePlatform) -> Vec<Point> {
+        platform
+            .calls
             .iter()
-            .filter(|c| c.starts_with("cliclick m:"))
-            .map(String::as_str)
+            .filter_map(|call| match call {
+                Call::MoveTo(point) => Some(*point),
+                _ => None,
+            })
             .collect()
     }
 
-    const POINTER: &str = "cliclick p";
-    const DOCK: &str = "osascript dock";
-    const WINDOWS: &str = "osascript windows";
-    /// Dock geometry as reported on a macos-26 runner.
-    const DOCK_ITEMS: &str = "Finder\t196\t986\t68\t84\nSystem Settings\t1420\t986\t68\t84\n\
-                              Terminal\t1488\t986\t68\t84\nmissing value\t1556\t986\t30\t84\n";
-
     #[test]
-    fn sleep_waits() {
-        let fake = play(Fake::default(), "  - sleep: 1.5s\n").unwrap();
-        assert_eq!(fake.slept, Duration::from_millis(1500));
-        assert_eq!(fake.calls, Vec::<String>::new());
-    }
-
-    #[test]
-    fn types_one_keystroke_at_a_time_at_typing_speed() {
-        let fake = play(
-            Fake::default(),
-            "  - set: { typingSpeed: 80ms }\n  - type: \"hi!\"\n",
+    fn clicks_glide_at_sixty_hz_then_click() {
+        let platform = play(
+            FakePlatform::default(),
+            "  - set: { moveDuration: 500ms }\n  - click: { point: { x: 900, y: 600 } }\n",
         )
         .unwrap();
-        assert_eq!(
-            fake.calls,
-            [
-                "cliclick t:h w:20",
-                "cliclick t:i w:20",
-                "cliclick t:! w:20"
-            ]
-        );
-        // Pauses go between keystrokes.
-        assert_eq!(fake.slept, Duration::from_millis(160));
-    }
-
-    #[test]
-    fn untypable_characters_fail_the_step() {
-        let fake = Fake::default().warn(
-            "cliclick t:é w:20",
-            "Unable to get key code for é (see https://github.com/BlueM/cliclick)\n",
-        );
-        let err = play(fake, "  - type: \"café\"\n").err();
-        assert!(
-            matches!(&err, Some(Error::Untypable { text, .. }) if text == "é"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn other_cliclick_warnings_keep_typing() {
-        let fake = Fake::default().warn("cliclick t:a w:20", "cliclick: some unrelated notice\n");
-        assert!(play(fake, "  - type: \"ab\"\n").is_ok());
-    }
-
-    #[test]
-    fn types_newline_and_tab_as_keys() {
-        let fake = play(Fake::default(), "  - type: \"a\\tb\\n\"\n").unwrap();
-        assert_eq!(
-            fake.calls,
-            [
-                "cliclick t:a w:20",
-                "cliclick kp:tab w:20",
-                "cliclick t:b w:20",
-                "cliclick kp:return w:20"
-            ]
-        );
-    }
-
-    #[test]
-    fn presses_chords_with_modifiers_held() {
-        let fake = play(
-            Fake::default(),
-            "  - key: \"return\"\n  - key: \"cmd+space\"\n  - key: \"cmd+shift+p\"\n",
-        )
-        .unwrap();
-        assert_eq!(
-            fake.calls,
-            [
-                "cliclick kp:return w:20",
-                "cliclick kd:cmd kp:space ku:cmd",
-                "cliclick kd:cmd,shift t:p ku:cmd,shift",
-            ]
-        );
-    }
-
-    #[test]
-    fn glide_time_includes_the_moves_themselves() {
-        let fake = Fake {
-            run_cost: Duration::from_millis(10),
-            ..Fake::default()
-        }
-        .reply(POINTER, "0,0\n");
-        let fake = play(
-            fake,
-            "  - set: { moveDuration: 500ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
-        )
-        .unwrap();
-        // Pointer read, 500 ms of glide, and the last move.
-        assert!(fake.clock <= Duration::from_millis(520), "{:?}", fake.clock);
-        assert_eq!(moves(&fake).len(), 30);
-    }
-
-    #[test]
-    fn keystrokes_start_typing_speed_apart() {
-        let fake = Fake {
-            run_cost: Duration::from_millis(10),
-            ..Fake::default()
-        };
-        let fake = play(fake, "  - set: { typingSpeed: 80ms }\n  - type: \"hi!\"\n").unwrap();
-        // Keystrokes start at 0, 80 and 160 ms; the last one takes 10 ms.
-        assert_eq!(fake.clock, Duration::from_millis(170));
-    }
-
-    #[test]
-    fn move_glides_at_sixty_hz_from_current_position() {
-        let fake = Fake::default().reply(POINTER, "100,200\n");
-        let fake = play(
-            fake,
-            "  - set: { moveDuration: 500ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
-        )
-        .unwrap();
-        let moves = moves(&fake);
+        let moves = moves(&platform);
         assert_eq!(moves.len(), 30);
-        assert_eq!(moves.last(), Some(&"cliclick m:900,600"));
-        assert_eq!(fake.slept, Duration::from_millis(500));
+        assert_eq!(moves.last(), Some(&Point { x: 900, y: 600 }));
+        assert_eq!(platform.calls.last(), Some(&Call::Click));
+        assert_eq!(platform.clock, Duration::from_millis(500));
     }
 
     #[test]
-    fn click_glides_then_clicks_in_place() {
-        let fake = Fake::default().reply(POINTER, "0,0\n");
-        let fake = play(fake, "  - click: { point: { x: 10, y: 20 } }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:10,20"));
-        assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
-    }
-
-    #[test]
-    fn dock_targets_aim_at_the_icon_centre() {
-        let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
-            .reply(DOCK, DOCK_ITEMS);
-        let fake = play(fake, "  - moveTo: { dock: Terminal }\n").unwrap();
-        // The icon centre: 1488 + 68/2, 986 + 84/2.
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1522,1028"));
-
-        let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
-            .reply(DOCK, DOCK_ITEMS);
-        let fake = play(fake, "  - moveTo: { dock: \"System Settings\" }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1454,1028"));
-    }
-
-    const CONTROLS: &str = "osascript controls";
-    const FOCUS: &str = "osascript focus";
-    /// The first-launch prompt as accessibility reported it on a macos-26-intel runner.
-    const PROMPT: &str = "CoreServicesUIAgent\tfalse\tCancel\t845\t432\t112\t30\n\
-                          CoreServicesUIAgent\tfalse\tOpen\t963\t432\t112\t30\n";
-
-    #[test]
-    fn buttons_are_clicked_at_their_centre_once_they_appear() {
-        let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
-            .reply(CONTROLS, "")
-            .reply(CONTROLS, PROMPT);
-        let fake = play(fake, "  - click: { button: \"Open\", timeout: 5s }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:1019,447"));
-        assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
-        let polls = fake.calls.iter().filter(|c| *c == CONTROLS).count();
-        assert_eq!(polls, 2);
-    }
-
-    #[test]
-    fn the_frontmost_app_wins_a_shared_label() {
-        let controls =
-            "Docker Desktop\tfalse\tOpen\t0\t0\t10\t10\nCode\ttrue\tOpen\t100\t100\t10\t10\n";
-        let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
-            .reply(CONTROLS, controls);
-        let fake = play(fake, "  - moveTo: { button: \"Open\" }\n").unwrap();
-        assert_eq!(moves(&fake).last(), Some(&"cliclick m:105,105"));
-    }
-
-    #[test]
-    fn a_label_in_several_background_apps_is_ambiguous() {
-        let controls =
-            "Docker Desktop\tfalse\tOpen\t0\t0\t10\t10\nCode\tfalse\tOpen\t100\t100\t10\t10\n";
-        let fake = Fake::default().reply(CONTROLS, controls);
-        let err = play(fake, "  - click: { button: \"Open\" }\n").err();
+    fn buttons_are_awaited_then_the_frontmost_one_is_clicked() {
+        let platform = FakePlatform {
+            buttons: VecDeque::from([
+                vec![],
+                vec![
+                    button("Docker", false, "Open", 10, 10),
+                    button("Code", true, "Open", 500, 400),
+                ],
+            ]),
+            ..FakePlatform::default()
+        };
+        let platform = play(platform, "  - click: { button: Open, timeout: 5s }\n").unwrap();
         assert_eq!(
-            err,
-            Some(Error::AmbiguousControl {
-                label: "Open".into(),
-                apps: vec!["Code".into(), "Docker Desktop".into()],
-            })
+            platform
+                .calls
+                .iter()
+                .filter(|c| **c == Call::Buttons)
+                .count(),
+            2
         );
+        assert_eq!(moves(&platform).last(), Some(&Point { x: 500, y: 400 }));
     }
 
     #[test]
     fn a_button_that_never_appears_times_out() {
-        let fake = Fake::default().reply(CONTROLS, PROMPT);
-        let err = play(fake, "  - click: { button: \"Allow\", timeout: 1s }\n").err();
+        let err = play(
+            FakePlatform::default(),
+            "  - click: { button: Allow, timeout: 1s }\n",
+        )
+        .err();
         assert_eq!(err, Some(Error::ControlNotFound("Allow".into())));
     }
 
     #[test]
-    fn garbled_button_listing_is_an_error() {
-        let fake = Fake::default().reply(CONTROLS, "Code\tmaybe\tOpen\t1\t2\t3\t4\n");
-        let err = play(fake, "  - click: { button: \"Open\" }\n").err();
-        assert!(
-            matches!(
-                err,
-                Some(Error::UnexpectedOutput {
-                    what: "on-screen buttons",
-                    ..
-                })
-            ),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn paste_sets_the_clipboard_then_presses_cmd_v() {
-        let fake = play(
-            Fake::default(),
-            "  - paste: \"curl -fsSL https://example.com\"\n",
-        )
-        .unwrap();
-        assert_eq!(
-            fake.calls,
-            [
-                "osascript clipboard curl -fsSL https://example.com",
-                "cliclick kd:cmd t:v ku:cmd"
-            ]
-        );
-    }
-
-    #[test]
-    fn focus_waits_until_the_app_is_in_front() {
-        let fake = Fake::default()
-            .reply(FOCUS, "false\n")
-            .reply(FOCUS, "true\n");
-        let fake = play(fake, "  - focus: \"Visual Studio Code\"\n").unwrap();
-        assert_eq!(
-            fake.calls,
-            [
-                "osascript focus Visual Studio Code",
-                "osascript focus Visual Studio Code"
-            ]
-        );
-    }
-
-    #[test]
-    fn focus_fails_when_the_app_stays_behind() {
-        let err = play(Fake::default(), "  - focus: \"Terminal\"\n").err();
-        assert_eq!(err, Some(Error::NotFrontmost("Terminal".into())));
-    }
-
-    #[test]
-    fn parses_button_listings() {
-        let controls = parse_controls(PROMPT).unwrap();
-        assert_eq!(controls.len(), 2);
-        assert_eq!(controls[1].label, "Open");
-        assert_eq!(controls[1].centre, Point { x: 1019, y: 447 });
-        assert!(!controls[1].frontmost);
-        assert_eq!(parse_controls(""), Some(vec![]));
-        assert_eq!(parse_controls("a\ttrue\tb\t1\t2\t3"), None);
-    }
-
-    #[test]
-    fn dock_targets_must_be_in_the_dock() {
-        let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
-            .reply(DOCK, DOCK_ITEMS);
-        let err = play(fake, "  - click: { dock: Safari }\n").err();
+    fn dock_targets_come_from_the_platform() {
+        let platform = FakePlatform {
+            dock: vec![("Terminal".into(), Point { x: 1522, y: 1028 })],
+            ..FakePlatform::default()
+        };
+        let platform = play(platform, "  - moveTo: { dock: Terminal }\n").unwrap();
+        assert_eq!(moves(&platform).last(), Some(&Point { x: 1522, y: 1028 }));
+        let err = play(FakePlatform::default(), "  - click: { dock: Safari }\n").err();
         assert_eq!(err, Some(Error::NotInDock("Safari".into())));
     }
 
     #[test]
-    fn garbled_dock_listing_is_an_error() {
-        let fake = Fake::default()
-            .reply(POINTER, "0,0\n")
-            .reply(DOCK, "Terminal\t1488\t986\n");
-        let err = play(fake, "  - click: { dock: Terminal }\n").err();
-        assert!(
-            matches!(
-                err,
-                Some(Error::UnexpectedOutput {
-                    what: "Dock items",
-                    ..
-                })
-            ),
-            "{err:?}"
-        );
-    }
-
-    /// Dock script output captured on a macos-26 runner, osascript's own newline included.
-    const RUNNER_DOCK: &str = "Finder\t196\t986\t68\t84\nApps\t264\t986\t68\t84\n\
-        System Settings\t1420\t986\t68\t84\nTerminal\t1488\t986\t68\t84\n\
-        missing value\t1556\t986\t30\t84\nDownloads\t1587\t986\t68\t84\nTrash\t1655\t986\t68\t84\n\n";
-
-    #[test]
-    fn parses_dock_listings_as_osascript_prints_them() {
-        let items = parse_dock(RUNNER_DOCK).unwrap();
-        assert_eq!(items.len(), 7, "{items:?}");
+    fn focus_polls_until_the_app_is_in_front() {
+        let platform = FakePlatform {
+            focus: VecDeque::from([false, true]),
+            ..FakePlatform::default()
+        };
+        let platform = play(platform, "  - focus: Terminal\n").unwrap();
         assert_eq!(
-            items[3],
-            ("Terminal".to_owned(), Point { x: 1522, y: 1028 })
+            platform.calls,
+            [
+                Call::Focus("Terminal".into()),
+                Call::Focus("Terminal".into())
+            ]
         );
+        assert_eq!(platform.clock, POLL_INTERVAL);
     }
 
     #[test]
-    fn parses_dock_listings() {
-        let items = parse_dock(DOCK_ITEMS).unwrap();
-        assert_eq!(items.len(), 4);
-        assert_eq!(
-            items[2],
-            ("Terminal".to_owned(), Point { x: 1522, y: 1028 })
-        );
-        assert_eq!(parse_dock(""), Some(vec![]));
-        for bad in [
-            "a\t1\t2\t3",
-            "a\t1\t2\t3\tx",
-            "a\t-1\t2\t3\t4",
-            "a\t+1\t2\t3\t4",
-            "a\t1.5\t2\t3\t4",
-        ] {
-            assert_eq!(parse_dock(bad), None, "{bad:?}");
-        }
+    fn window_waits_match_titles_ignoring_case() {
+        let platform = FakePlatform {
+            windows: VecDeque::from([vec!["Finder".into()], vec!["VISUAL Studio Code".into()]]),
+            ..FakePlatform::default()
+        };
+        let platform = play(platform, "  - waitWindow: { title: visual studio }\n").unwrap();
+        assert_eq!(platform.calls, [Call::Windows, Call::Windows]);
     }
 
     #[test]
-    fn wait_window_polls_until_a_title_contains_the_text() {
-        let fake = Fake::default()
-            .reply(WINDOWS, "Finder\n")
-            .reply(WINDOWS, "Finder\n")
-            .reply(WINDOWS, "Finder\nrunner — -bash — 80×24\n");
-        let fake = play(fake, "  - waitWindow: { title: \"bash\" }\n").unwrap();
-        assert_eq!(fake.calls, ["osascript windows"; 3]);
-        assert_eq!(fake.slept, POLL_INTERVAL * 2);
-    }
-
-    #[test]
-    fn wait_window_ignores_case() {
-        let fake = Fake::default().reply(WINDOWS, "Finder\no3s - Visual Studio Code\n");
-        let fake = play(fake, "  - waitWindow: { title: \"VISUAL studio\" }\n").unwrap();
-        assert_eq!(fake.calls, ["osascript windows"]);
-    }
-
-    #[test]
-    fn screenshot_captures_silently() {
-        let mut desktop = Desktop::new(Fake::default());
-        desktop.screenshot("/out/fail.png").unwrap();
-        assert_eq!(
-            desktop.into_runner().calls,
-            ["screencapture -x /out/fail.png"]
-        );
-    }
-
-    #[test]
-    fn wait_window_respects_timeout() {
-        let mut fake = Fake::default();
-        for _ in 0..1000 {
-            fake = fake.reply(WINDOWS, "Finder\n");
-        }
-        let mut desktop = Desktop::new(fake);
-        let err = steps("  - waitWindow: { title: \"Nope\", timeout: 1s }\n")
-            .iter()
-            .try_for_each(|s| desktop.play(s))
-            .err();
-        assert_eq!(err, Some(Error::WindowNotFound("Nope".into())));
-        let fake = desktop.into_runner();
-        assert_eq!(fake.calls.len(), 11);
-        assert_eq!(fake.slept, Duration::from_secs(1));
-    }
-
-    #[test]
-    fn wait_window_stops_on_osascript_failure() {
-        let fake = Fake::default().exit(WINDOWS, 1);
-        let err = play(fake, "  - waitWindow: { title: \"Terminal\" }\n").err();
-        assert!(
-            matches!(err, Some(Error::Exit { code: Some(1), .. })),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn wait_until_polls_shell_until_success() {
-        let fake = Fake::default()
-            .exit("sh -c", 1)
-            .exit("sh -c", 127)
-            .reply("sh -c", "");
-        let fake = play(
-            fake,
-            "  - waitUntil: { command: \"command -v code\", timeout: 1m }\n",
+    fn a_hanging_query_ends_its_wait_at_the_deadline() {
+        let platform = FakePlatform {
+            query_cost: Duration::from_secs(600),
+            ..FakePlatform::default()
+        };
+        let err = play(
+            platform,
+            "  - waitUntil: { command: curl -s http://stuck, timeout: 1m }\n",
         )
-        .unwrap();
-        assert_eq!(fake.calls, ["sh -c command -v code"; 3]);
-        assert_eq!(fake.slept, UNTIL_POLL_INTERVAL * 2);
-    }
-
-    #[test]
-    fn wait_until_timeout_counts_time_spent_running() {
-        let mut fake = Fake {
-            run_cost: Duration::from_secs(10),
-            ..Fake::default()
-        };
-        for _ in 0..1000 {
-            fake = fake.exit("sh -c", 1);
-        }
-        let mut desktop = Desktop::new(fake);
-        let err = steps("  - waitUntil: { command: \"slow-check\", timeout: 1m }\n")
-            .iter()
-            .try_for_each(|s| desktop.play(s))
-            .err();
-        assert_eq!(err, Some(Error::ConditionNotMet("slow-check".into())));
-        let fake = desktop.into_runner();
-        // Ends within one run and one poll interval of the deadline.
-        assert!(
-            fake.clock <= Duration::from_secs(70) + UNTIL_POLL_INTERVAL,
-            "{:?}",
-            fake.clock
-        );
-        assert!(fake.calls.len() <= 7, "{} runs", fake.calls.len());
-    }
-
-    #[test]
-    fn wait_until_ends_a_hanging_attempt_at_the_deadline() {
-        let fake = Fake {
-            run_cost: Duration::from_secs(600),
-            ..Fake::default()
-        };
-        let mut desktop = Desktop::new(fake);
-        let err = steps("  - waitUntil: { command: \"curl -s http://stuck\", timeout: 1m }\n")
-            .iter()
-            .try_for_each(|s| desktop.play(s))
-            .err();
+        .err();
         assert_eq!(
             err,
             Some(Error::ConditionNotMet("curl -s http://stuck".into()))
         );
-        assert_eq!(desktop.into_runner().clock, Duration::from_secs(60));
-    }
-
-    /// An `alive` check that turns false on its `n`th call.
-    fn alive_for(n: usize) -> impl FnMut() -> bool {
-        let mut calls = 0;
-        move || {
-            calls += 1;
-            calls < n
-        }
     }
 
     #[test]
-    fn waits_end_when_the_recording_stops() {
-        let mut fake = Fake::default();
-        for _ in 0..1000 {
-            fake = fake.exit("sh -c", 1);
-        }
-        let mut desktop = Desktop::new(fake);
-        let step = &steps("  - waitUntil: { command: \"false\", timeout: 30m }\n")[0];
+    fn shell_waits_poll_until_success() {
+        let platform = FakePlatform {
+            shell: VecDeque::from([false, false, true]),
+            ..FakePlatform::default()
+        };
+        let platform = play(platform, "  - waitUntil: { command: test -f x }\n").unwrap();
+        assert_eq!(platform.calls.len(), 3);
+        assert_eq!(platform.clock, UNTIL_POLL_INTERVAL * 2);
+    }
+
+    #[test]
+    fn typing_paces_one_character_per_delay() {
+        let platform = play(
+            FakePlatform::default(),
+            "  - set: { typingSpeed: 80ms }\n  - type: hi!\n",
+        )
+        .unwrap();
         assert_eq!(
-            desktop.play_while(step, &mut alive_for(3)),
-            Err(Error::Interrupted)
+            platform.calls,
+            [Call::Type('h'), Call::Type('i'), Call::Type('!')]
         );
-        assert!(desktop.into_runner().calls.len() <= 3);
+        assert_eq!(platform.clock, Duration::from_millis(160));
     }
 
     #[test]
-    fn sleeps_end_when_the_recording_stops() {
-        let mut desktop = Desktop::new(Fake::default());
-        let step = &steps("  - sleep: 5m\n")[0];
-        assert_eq!(
-            desktop.play_while(step, &mut alive_for(3)),
-            Err(Error::Interrupted)
-        );
-        assert!(desktop.into_runner().slept <= Duration::from_secs(3));
+    fn paste_and_keys_go_straight_to_the_platform() {
+        let platform = play(
+            FakePlatform::default(),
+            "  - paste: git clone x\n  - key: primary+k\n",
+        )
+        .unwrap();
+        assert_eq!(platform.calls.len(), 2);
+        assert_eq!(platform.calls[0], Call::Paste("git clone x".into()));
+        assert!(matches!(&platform.calls[1], Call::Key(chord) if chord.contains("Primary")));
     }
 
     #[test]
-    fn wait_until_times_out() {
-        let mut fake = Fake::default();
-        for _ in 0..1000 {
-            fake = fake.exit("sh -c", 1);
-        }
-        let err = play(fake, "  - waitUntil: { command: \"false\", timeout: 2s }\n").err();
-        assert_eq!(err, Some(Error::ConditionNotMet("false".into())));
+    fn waits_stop_when_the_recording_ends() {
+        let mut desktop = Desktop::new(FakePlatform::default());
+        let steps =
+            tape::parse("output: t.mp4\nsteps:\n  - waitUntil: { command: x, timeout: 1m }\n")
+                .unwrap()
+                .steps;
+        let err = desktop.play_while(&steps[0], &mut || false).err();
+        assert_eq!(err, Some(Error::Interrupted));
     }
 
     #[test]
     fn warp_markers_touch_nothing() {
-        let fake = play(
-            Fake::default(),
-            "  - warp:\n      label: \"x\"\n      length: 1s\n      steps: []\n",
+        let platform = play(
+            FakePlatform::default(),
+            "  - warp: { label: x, length: 1s, steps: [] }\n",
         )
         .unwrap();
-        assert_eq!(fake.calls, Vec::<String>::new());
-        assert_eq!(fake.slept, Duration::ZERO);
-    }
-
-    #[test]
-    fn garbled_pointer_location_is_an_error() {
-        for output in ["huh\n", "1,2,3\n", "-5,7\n", "+5,7\n"] {
-            let fake = Fake::default().reply(POINTER, output);
-            let err = play(fake, "  - moveTo: { point: { x: 1, y: 1 } }\n").err();
-            assert!(
-                matches!(
-                    err,
-                    Some(Error::UnexpectedOutput {
-                        what: "pointer location",
-                        ..
-                    })
-                ),
-                "{output:?}: {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn system_runner_kills_the_whole_process_group_at_the_limit() {
-        let mut runner = SystemRunner::default();
-        let started = Instant::now();
-        // The background `sleep` holds the output pipe until it dies too.
-        let result = runner.run(
-            "sh",
-            &["-c", "sleep 30 & sleep 30"],
-            Some(Duration::from_millis(200)),
-        );
-        assert!(matches!(result, Err(Error::TimedOut { .. })), "{result:?}");
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[test]
-    fn system_runner_reports_spawn_and_exit_failures() {
-        let mut runner = SystemRunner::default();
-        assert_eq!(runner.run("echo", &["hi"], None).unwrap().stdout, "hi\n");
-        assert!(matches!(
-            runner.run("/nonexistent/program", &[], None),
-            Err(Error::Spawn { .. })
-        ));
-        assert!(matches!(
-            runner.run("false", &[], None),
-            Err(Error::Exit { code: Some(1), .. })
-        ));
+        assert_eq!(platform.calls, []);
     }
 }
