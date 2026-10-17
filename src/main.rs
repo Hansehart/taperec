@@ -23,6 +23,16 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Ok(cli::Invocation::Render { timeline, out }) => match app::render(&timeline, &out) {
+            Ok(()) => {
+                eprintln!("taperec: wrote {}", out.display());
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("taperec: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(cli::Invocation::Check(tapes)) => {
             let failures = app::check(&tapes);
             for failure in &failures {

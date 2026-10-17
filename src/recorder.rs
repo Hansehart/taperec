@@ -28,7 +28,9 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 /// The main display as ffmpeg's avfoundation input lists it.
 const SCREEN: &str = "Capture screen 0";
 
-/// ffmpeg arguments that record the screen, cursor and clicks at `fps` into an MPEG-TS `out`.
+/// ffmpeg arguments that record the screen, cursor and clicks at `fps` into a Matroska `out`.
+///
+/// Frames carry wall-clock times, the clock the timeline marks warps on.
 #[must_use]
 pub fn ffmpeg_args(fps: NonZeroU32, out: &Path) -> Vec<OsString> {
     let fps = fps.to_string();
@@ -36,11 +38,17 @@ pub fn ffmpeg_args(fps: NonZeroU32, out: &Path) -> Vec<OsString> {
     let capture = [
         // ffmpeg reads `q` once per stats period, here every 50 ms.
         "-stats_period", "0.05",
+        "-use_wallclock_as_timestamps", "1",
         "-f", "avfoundation", "-capture_cursor", "1", "-capture_mouse_clicks", "1",
         "-pixel_format", "bgr0", "-framerate", &fps, "-i", SCREEN,
     ];
-    // MPEG-TS stays playable up to its last packet, however the recorder ends.
-    let stream = ["-tune", "zerolatency", "-f", "mpegts"];
+    // Matroska keeps the wall-clock times whole; written live, one-second clusters reach the disk
+    // as they close, so a killed recorder loses under a second.
+    #[rustfmt::skip]
+    let stream = [
+        "-tune", "zerolatency", "-copyts", "-flush_packets", "1",
+        "-f", "matroska", "-live", "1", "-cluster_time_limit", "1000",
+    ];
     QUIET
         .into_iter()
         .chain(capture)
@@ -77,17 +85,17 @@ pub fn encode(program: &str, args: &[OsString], out: &Path) -> Result<(), Error>
     })
 }
 
-/// The length of the video at `path`, from the container's duration.
+/// When the video at `path` starts, from the container's start time: the wall-clock time of its first frame.
 ///
 /// # Errors
 ///
 /// [`Error::Spawn`]/[`Error::Exit`] for a failing prober, [`Error::Probe`] for unexpected output.
-pub fn probe_duration(program: &str, path: &Path) -> Result<Duration, Error> {
+pub fn probe_start(program: &str, path: &Path) -> Result<Duration, Error> {
     let args = [
         "-v",
         "error",
         "-show_entries",
-        "format=duration",
+        "format=start_time",
         "-of",
         "csv=p=0",
     ]
@@ -337,18 +345,20 @@ mod tests {
     }
 
     #[test]
-    fn records_the_macos_screen_as_streaming_h264() {
+    fn records_the_macos_screen_as_h264_on_the_wall_clock() {
         #[rustfmt::skip]
         let expected = [
             "-hide_banner", "-loglevel", "error", "-y",
             "-stats_period", "0.05",
+            "-use_wallclock_as_timestamps", "1",
             "-f", "avfoundation", "-capture_cursor", "1", "-capture_mouse_clicks", "1",
             "-pixel_format", "bgr0", "-framerate", "30", "-i", "Capture screen 0",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-            "-tune", "zerolatency", "-f", "mpegts",
-            "/out/demo.ts",
+            "-tune", "zerolatency", "-copyts", "-flush_packets", "1",
+            "-f", "matroska", "-live", "1", "-cluster_time_limit", "1000",
+            "/out/demo.raw.mkv",
         ];
-        let args = ffmpeg_args(NonZeroU32::new(30).unwrap(), Path::new("/out/demo.ts"));
+        let args = ffmpeg_args(NonZeroU32::new(30).unwrap(), Path::new("/out/demo.raw.mkv"));
         assert_eq!(strings(&args), expected);
     }
 
@@ -455,9 +465,9 @@ mod tests {
     }
 
     #[test]
-    fn probe_rejects_output_that_is_not_a_duration() {
+    fn probe_rejects_output_that_is_not_a_time() {
         // `echo` prints its arguments back.
-        let err = probe_duration("echo", Path::new("/x.mp4")).unwrap_err();
+        let err = probe_start("echo", Path::new("/x.mkv")).unwrap_err();
         assert!(matches!(err, Error::Probe(_)), "{err:?}");
     }
 

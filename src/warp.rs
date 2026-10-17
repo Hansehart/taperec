@@ -6,6 +6,8 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::recorder::{H264, MP4, QUIET};
 use crate::tape::Step;
 
@@ -20,7 +22,7 @@ pub struct Span {
     pub length: Duration,
 }
 
-/// A finished warp, timed against the capture.
+/// A finished warp, timed on the wall clock the capture stamps its frames with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marked {
     /// Where it lies in the capture and how long it lasts in the video.
@@ -37,7 +39,7 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    /// Notes the warp markers among steps, each happening `at` into the capture.
+    /// Notes the warp markers among steps, each happening at wall-clock time `at`.
     pub fn mark(&mut self, step: &Step, at: Duration) {
         match step {
             Step::Warp { label, length } => {
@@ -67,25 +69,75 @@ impl Timeline {
     }
 }
 
-/// Moves `marked` warps `offset` earlier, onto the capture's clock.
+/// What a recording leaves next to its raw capture for rendering: the warps, on the capture's clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineFile {
+    /// The raw capture, relative to the timeline file.
+    pub video: String,
+    /// The warps, in order.
+    pub warps: Vec<WarpEntry>,
+}
+
+/// One warp of a timeline file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WarpEntry {
+    /// The tape's label for it.
+    pub label: String,
+    /// When it started, in seconds since the Unix epoch, the clock the capture's frames carry.
+    #[serde(with = "epoch_seconds")]
+    pub start: Duration,
+    /// When it ended, on the same clock.
+    #[serde(with = "epoch_seconds")]
+    pub end: Duration,
+    /// How long it lasts in the final video, in seconds.
+    #[serde(with = "epoch_seconds")]
+    pub length: Duration,
+    /// The caption image, relative to the timeline file.
+    pub caption: String,
+}
+
+/// Durations as seconds with a fraction, e.g. `1792258264.258`.
+mod epoch_seconds {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(value.as_secs_f64())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Duration, D::Error> {
+        let seconds = f64::deserialize(deserializer)?;
+        Duration::try_from_secs_f64(seconds).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The spans of `warps` within a capture whose first frame carries `capture_start`.
 #[must_use]
-pub fn align(marked: Vec<Marked>, offset: Duration) -> Vec<Marked> {
-    marked
-        .into_iter()
-        .map(|mut mark| {
-            mark.span.start = mark.span.start.saturating_sub(offset);
-            mark.span.end = mark.span.end.saturating_sub(offset);
-            mark
+pub fn spans(warps: &[WarpEntry], capture_start: Duration) -> Vec<Span> {
+    warps
+        .iter()
+        .map(|warp| Span {
+            start: warp.start.saturating_sub(capture_start),
+            end: warp.end.saturating_sub(capture_start),
+            length: warp.length,
         })
         .collect()
 }
 
-/// The warps lasting at least `frame` in the capture.
+/// The warps lasting at least `frame` in the capture; shorter ones play as normal footage.
 #[must_use]
-pub fn visible(marked: Vec<Marked>, frame: Duration) -> Vec<Marked> {
-    marked
+pub fn visible(warps: Vec<WarpEntry>, frame: Duration) -> Vec<WarpEntry> {
+    warps
         .into_iter()
-        .filter(|mark| mark.span.end.saturating_sub(mark.span.start) >= frame)
+        .filter(|warp| warp.end.saturating_sub(warp.start) >= frame)
         .collect()
 }
 
@@ -265,34 +317,62 @@ mod tests {
         );
     }
 
-    fn marked(start: Duration, end: Duration) -> Marked {
-        Marked {
-            span: Span {
-                start,
-                end,
-                length: secs(1),
-            },
+    fn entry(start: Duration, end: Duration) -> WarpEntry {
+        WarpEntry {
             label: "x".into(),
+            start,
+            end,
+            length: secs(1),
+            caption: "x.warp0.png".into(),
         }
     }
 
+    /// A wall-clock instant, seconds since the Unix epoch.
+    fn epoch(seconds: u64) -> Duration {
+        secs(1_792_258_264 + seconds)
+    }
+
     #[test]
-    fn align_moves_marks_onto_the_capture_clock() {
+    fn spans_sit_where_the_capture_clock_says() {
         let ms = Duration::from_millis;
+        // The capture's first frame came 0.4 s after the tape started.
+        let start = epoch(0) + ms(400);
         assert_eq!(
-            align(
-                vec![marked(secs(5), secs(30)), marked(secs(40), secs(50))],
-                ms(400)
+            spans(
+                &[entry(epoch(5), epoch(30)), entry(epoch(40), epoch(50))],
+                start
             ),
-            [marked(ms(4600), ms(29_600)), marked(ms(39_600), ms(49_600))]
+            [
+                Span {
+                    start: ms(4600),
+                    end: ms(29_600),
+                    length: secs(1)
+                },
+                Span {
+                    start: ms(39_600),
+                    end: ms(49_600),
+                    length: secs(1)
+                },
+            ]
         );
     }
 
     #[test]
-    fn align_saturates_at_the_capture_start() {
+    fn a_stalled_capture_keeps_later_warps_in_place() {
+        // Frames stop for minutes mid-way, yet a warp after the stall stays at its own time.
+        let warps = [entry(epoch(600), epoch(3000))];
+        assert_eq!(spans(&warps, epoch(0))[0].start, secs(600));
+    }
+
+    #[test]
+    fn spans_saturate_at_the_capture_start() {
         assert_eq!(
-            align(vec![marked(secs(0), secs(3))], secs(1)),
-            [marked(secs(0), secs(2))]
+            spans(&[entry(epoch(0), epoch(3))], epoch(1)),
+            [Span {
+                start: secs(0),
+                end: secs(2),
+                length: secs(1)
+            }]
         );
     }
 
@@ -300,13 +380,40 @@ mod tests {
     fn keeps_only_warps_at_least_a_frame_long() {
         let ms = Duration::from_millis;
         let frame = ms(33);
-        let collapsed = align(vec![marked(secs(0), secs(1))], secs(2));
-        assert_eq!(visible(collapsed, frame), []);
-        assert_eq!(visible(vec![marked(ms(100), ms(110))], frame), []);
+        assert_eq!(visible(vec![entry(ms(100), ms(110))], frame), []);
         assert_eq!(
-            visible(vec![marked(ms(100), ms(200))], frame),
-            [marked(ms(100), ms(200))]
+            visible(vec![entry(ms(100), ms(200))], frame),
+            [entry(ms(100), ms(200))]
         );
+    }
+
+    #[test]
+    fn timeline_files_round_trip_through_yaml() {
+        let file = TimelineFile {
+            video: "smoke.raw.mkv".into(),
+            warps: vec![WarpEntry {
+                label: "Building the cage".into(),
+                start: epoch(10) + Duration::from_millis(250),
+                end: epoch(2100),
+                length: secs(5),
+                caption: "smoke.warp0.png".into(),
+            }],
+        };
+        let yaml = serde_saphyr::to_string(&file).unwrap();
+        assert_eq!(
+            serde_saphyr::from_str::<TimelineFile>(&yaml).unwrap(),
+            file,
+            "{yaml}"
+        );
+    }
+
+    #[test]
+    fn timeline_files_reject_unknown_fields_and_negative_times() {
+        let base =
+            "video: a.raw.mkv\nwarps:\n  - { label: a, start: 1, end: 2, length: 1, caption: a.png";
+        assert!(serde_saphyr::from_str::<TimelineFile>(&format!("{base}, extra: 1 }}\n")).is_err());
+        let negative = "video: a.raw.mkv\nwarps:\n  - { label: a, start: -1, end: 2, length: 1, caption: a.png }\n";
+        assert!(serde_saphyr::from_str::<TimelineFile>(negative).is_err());
     }
 
     #[test]

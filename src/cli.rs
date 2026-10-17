@@ -7,6 +7,7 @@ use std::path::PathBuf;
 /// Usage text shown for `--help` and after argument errors.
 pub const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG]
        taperec check <tape.yaml>...
+       taperec render <name.timeline.yaml> [--out FILE]
        taperec schema";
 
 /// Parsed arguments.
@@ -29,6 +30,13 @@ pub enum Invocation {
     Check(Vec<PathBuf>),
     /// Print the tape JSON Schema.
     Schema,
+    /// Build a video from a recording's timeline file.
+    Render {
+        /// The timeline file.
+        timeline: PathBuf,
+        /// The video to write.
+        out: PathBuf,
+    },
     /// Print usage.
     Help,
     /// Print the version.
@@ -40,6 +48,8 @@ pub enum Invocation {
 pub enum UsageError {
     /// A missing tape.
     MissingTape,
+    /// A missing timeline file.
+    MissingTimeline,
     /// A second tape.
     ExtraArgument(OsString),
     /// An unknown option.
@@ -54,6 +64,7 @@ impl fmt::Display for UsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingTape => write!(f, "no tape given"),
+            Self::MissingTimeline => write!(f, "no timeline given"),
             Self::ExtraArgument(arg) => write!(f, "unexpected argument {}", arg.to_string_lossy()),
             Self::UnknownOption(arg) => write!(f, "unknown option {}", arg.to_string_lossy()),
             Self::NotUtf8(option) => write!(f, "{option} needs a UTF-8 path"),
@@ -80,6 +91,10 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
             } else {
                 Ok(Invocation::Check(tapes))
             };
+        }
+        Some("render") => {
+            args.next();
+            return render(args);
         }
         Some("schema") => {
             args.next();
@@ -118,6 +133,37 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
         out_dir: out_dir.unwrap_or_else(|| ".".into()).into(),
         failshot,
     }))
+}
+
+/// Parses `render <timeline> [--out FILE]`; without `--out` the video sits next to the timeline.
+fn render(args: impl Iterator<Item = OsString>) -> Result<Invocation, UsageError> {
+    let mut args = args;
+    let mut timeline: Option<PathBuf> = None;
+    let mut out = None;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--out") => {
+                out = Some(args.next().ok_or(UsageError::MissingValue("--out"))?.into());
+            }
+            Some(option) if option.starts_with('-') => return Err(UsageError::UnknownOption(arg)),
+            _ if timeline.is_some() => return Err(UsageError::ExtraArgument(arg)),
+            _ => timeline = Some(arg.into()),
+        }
+    }
+    let timeline = timeline.ok_or(UsageError::MissingTimeline)?;
+    let out = if let Some(out) = out {
+        out
+    } else {
+        let name = timeline
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let stem = name
+            .strip_suffix(".timeline.yaml")
+            .ok_or(UsageError::MissingValue("--out"))?;
+        timeline.with_file_name(format!("{stem}.mp4"))
+    };
+    Ok(Invocation::Render { timeline, out })
 }
 
 #[cfg(test)]
@@ -199,6 +245,29 @@ mod tests {
             Ok(Invocation::Check(vec!["a.yaml".into(), "b.yaml".into()]))
         );
         assert_eq!(parse_strs(&["check"]), Err(UsageError::MissingTape));
+    }
+
+    #[test]
+    fn render_writes_next_to_the_timeline_unless_told() {
+        assert_eq!(
+            parse_strs(&["render", "out/smoke.timeline.yaml"]),
+            Ok(Invocation::Render {
+                timeline: "out/smoke.timeline.yaml".into(),
+                out: "out/smoke.mp4".into(),
+            })
+        );
+        assert_eq!(
+            parse_strs(&["render", "t.yaml", "--out", "cut.mp4"]),
+            Ok(Invocation::Render {
+                timeline: "t.yaml".into(),
+                out: "cut.mp4".into(),
+            })
+        );
+        assert_eq!(
+            parse_strs(&["render", "t.yaml"]),
+            Err(UsageError::MissingValue("--out"))
+        );
+        assert_eq!(parse_strs(&["render"]), Err(UsageError::MissingTimeline));
     }
 
     #[test]
