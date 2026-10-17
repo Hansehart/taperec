@@ -181,27 +181,27 @@ jobs:
           name: wallpaper-probe
           path: out/
 
-  # Types key by key under each kind of recording load, three times each, to find what loses keystrokes.
+  # Types about 9,000 characters per job with each way of posting keys while recording, to find what loses keystrokes.
   keyloss-probe:
     if: inputs.run == 'keyloss'
     strategy:
       fail-fast: false
       matrix:
-        load: [none, record, capture, encode]
-        replica: [1, 2, 3]
+        method: [session, hid, hid-hold]
+        replica: [1, 2, 3, 4, 5, 6]
     runs-on: macos-26-intel
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
-      LOAD: ${{ matrix.load }}
+      METHOD: ${{ matrix.method }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
       - name: Keyloss probe
-        timeout-minutes: 25
-        run: .github/scripts/keyloss-probe.sh "$LOAD" out
+        timeout-minutes: 40
+        run: .github/scripts/keyloss-probe.sh "$METHOD" out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: keyloss-${{ matrix.load }}-${{ matrix.replica }}
+          name: keyloss-${{ matrix.method }}-${{ matrix.replica }}
           path: out/
