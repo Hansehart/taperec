@@ -30,7 +30,7 @@ jobs:
       - id: render
         uses: $/
         with:
-          tapes: tests/smoke.tape
+          tapes: tests/smoke.yaml
           dock: Terminal
           from-source: ${{ github.event_name != 'workflow_dispatch' || inputs.from-source }}
       - name: Verify
@@ -61,7 +61,7 @@ jobs:
         uses: $/
         continue-on-error: true
         with:
-          tapes: tests/fail.tape
+          tapes: tests/fail.yaml
           from-source: ${{ github.event_name != 'workflow_dispatch' || inputs.from-source }}
       - name: Verify the failure
         env:

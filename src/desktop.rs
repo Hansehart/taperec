@@ -887,7 +887,9 @@ mod tests {
 
     /// Steps built through the parser.
     fn steps(body: &str) -> Vec<Step> {
-        tape::parse(&format!("Output t.mp4\n{body}")).unwrap().steps
+        tape::parse(&format!("output: t.mp4\nsteps:\n{body}"))
+            .unwrap()
+            .steps
     }
 
     fn play(fake: Fake, body: &str) -> Result<Fake, Error> {
@@ -915,14 +917,18 @@ mod tests {
 
     #[test]
     fn sleep_waits() {
-        let fake = play(Fake::default(), "Sleep 1.5s").unwrap();
+        let fake = play(Fake::default(), "  - sleep: 1.5s\n").unwrap();
         assert_eq!(fake.slept, Duration::from_millis(1500));
         assert_eq!(fake.calls, Vec::<String>::new());
     }
 
     #[test]
     fn types_one_keystroke_at_a_time_at_typing_speed() {
-        let fake = play(Fake::default(), "Set TypingSpeed 80ms\nType \"hi!\"").unwrap();
+        let fake = play(
+            Fake::default(),
+            "  - set: { typingSpeed: 80ms }\n  - type: \"hi!\"\n",
+        )
+        .unwrap();
         assert_eq!(
             fake.calls,
             [
@@ -941,7 +947,7 @@ mod tests {
             "cliclick t:é w:20",
             "Unable to get key code for é (see https://github.com/BlueM/cliclick)\n",
         );
-        let err = play(fake, "Type \"café\"").err();
+        let err = play(fake, "  - type: \"café\"\n").err();
         assert!(
             matches!(&err, Some(Error::Untypable { text, .. }) if text == "é"),
             "{err:?}"
@@ -951,12 +957,12 @@ mod tests {
     #[test]
     fn other_cliclick_warnings_keep_typing() {
         let fake = Fake::default().warn("cliclick t:a w:20", "cliclick: some unrelated notice\n");
-        assert!(play(fake, "Type \"ab\"").is_ok());
+        assert!(play(fake, "  - type: \"ab\"\n").is_ok());
     }
 
     #[test]
     fn types_newline_and_tab_as_keys() {
-        let fake = play(Fake::default(), "Type \"a\\tb\\n\"").unwrap();
+        let fake = play(Fake::default(), "  - type: \"a\\tb\\n\"\n").unwrap();
         assert_eq!(
             fake.calls,
             [
@@ -972,7 +978,7 @@ mod tests {
     fn presses_chords_with_modifiers_held() {
         let fake = play(
             Fake::default(),
-            "Key return\nKey cmd+space\nKey cmd+shift+p",
+            "  - key: \"return\"\n  - key: \"cmd+space\"\n  - key: \"cmd+shift+p\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -992,7 +998,11 @@ mod tests {
             ..Fake::default()
         }
         .reply(POINTER, "0,0\n");
-        let fake = play(fake, "Set MoveDuration 500ms\nMoveTo 900,600").unwrap();
+        let fake = play(
+            fake,
+            "  - set: { moveDuration: 500ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
+        )
+        .unwrap();
         // Pointer read, 500 ms of glide, and the last move.
         assert!(fake.clock <= Duration::from_millis(520), "{:?}", fake.clock);
         assert_eq!(moves(&fake).len(), 30);
@@ -1004,7 +1014,7 @@ mod tests {
             run_cost: Duration::from_millis(10),
             ..Fake::default()
         };
-        let fake = play(fake, "Set TypingSpeed 80ms\nType \"hi!\"").unwrap();
+        let fake = play(fake, "  - set: { typingSpeed: 80ms }\n  - type: \"hi!\"\n").unwrap();
         // Keystrokes start at 0, 80 and 160 ms; the last one takes 10 ms.
         assert_eq!(fake.clock, Duration::from_millis(170));
     }
@@ -1012,7 +1022,11 @@ mod tests {
     #[test]
     fn move_glides_at_sixty_hz_from_current_position() {
         let fake = Fake::default().reply(POINTER, "100,200\n");
-        let fake = play(fake, "Set MoveDuration 500ms\nMoveTo 900,600").unwrap();
+        let fake = play(
+            fake,
+            "  - set: { moveDuration: 500ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
+        )
+        .unwrap();
         let moves = moves(&fake);
         assert_eq!(moves.len(), 30);
         assert_eq!(moves.last(), Some(&"cliclick m:900,600"));
@@ -1022,7 +1036,7 @@ mod tests {
     #[test]
     fn click_glides_then_clicks_in_place() {
         let fake = Fake::default().reply(POINTER, "0,0\n");
-        let fake = play(fake, "Click 10,20").unwrap();
+        let fake = play(fake, "  - click: { point: { x: 10, y: 20 } }\n").unwrap();
         assert_eq!(moves(&fake).last(), Some(&"cliclick m:10,20"));
         assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
     }
@@ -1032,14 +1046,14 @@ mod tests {
         let fake = Fake::default()
             .reply(POINTER, "0,0\n")
             .reply(DOCK, DOCK_ITEMS);
-        let fake = play(fake, "MoveTo dock:Terminal").unwrap();
+        let fake = play(fake, "  - moveTo: { dock: Terminal }\n").unwrap();
         // The icon centre: 1488 + 68/2, 986 + 84/2.
         assert_eq!(moves(&fake).last(), Some(&"cliclick m:1522,1028"));
 
         let fake = Fake::default()
             .reply(POINTER, "0,0\n")
             .reply(DOCK, DOCK_ITEMS);
-        let fake = play(fake, "MoveTo dock:\"System Settings\"").unwrap();
+        let fake = play(fake, "  - moveTo: { dock: \"System Settings\" }\n").unwrap();
         assert_eq!(moves(&fake).last(), Some(&"cliclick m:1454,1028"));
     }
 
@@ -1055,7 +1069,7 @@ mod tests {
             .reply(POINTER, "0,0\n")
             .reply(CONTROLS, "")
             .reply(CONTROLS, PROMPT);
-        let fake = play(fake, "Click button:\"Open\" 5s").unwrap();
+        let fake = play(fake, "  - click: { button: \"Open\", timeout: 5s }\n").unwrap();
         assert_eq!(moves(&fake).last(), Some(&"cliclick m:1019,447"));
         assert_eq!(fake.calls.last().map(String::as_str), Some("cliclick c:."));
         let polls = fake.calls.iter().filter(|c| *c == CONTROLS).count();
@@ -1069,7 +1083,7 @@ mod tests {
         let fake = Fake::default()
             .reply(POINTER, "0,0\n")
             .reply(CONTROLS, controls);
-        let fake = play(fake, "MoveTo button:\"Open\"").unwrap();
+        let fake = play(fake, "  - moveTo: { button: \"Open\" }\n").unwrap();
         assert_eq!(moves(&fake).last(), Some(&"cliclick m:105,105"));
     }
 
@@ -1078,7 +1092,7 @@ mod tests {
         let controls =
             "Docker Desktop\tfalse\tOpen\t0\t0\t10\t10\nCode\tfalse\tOpen\t100\t100\t10\t10\n";
         let fake = Fake::default().reply(CONTROLS, controls);
-        let err = play(fake, "Click button:\"Open\"").err();
+        let err = play(fake, "  - click: { button: \"Open\" }\n").err();
         assert_eq!(
             err,
             Some(Error::AmbiguousControl {
@@ -1091,14 +1105,14 @@ mod tests {
     #[test]
     fn a_button_that_never_appears_times_out() {
         let fake = Fake::default().reply(CONTROLS, PROMPT);
-        let err = play(fake, "Click button:\"Allow\" 1s").err();
+        let err = play(fake, "  - click: { button: \"Allow\", timeout: 1s }\n").err();
         assert_eq!(err, Some(Error::ControlNotFound("Allow".into())));
     }
 
     #[test]
     fn garbled_button_listing_is_an_error() {
         let fake = Fake::default().reply(CONTROLS, "Code\tmaybe\tOpen\t1\t2\t3\t4\n");
-        let err = play(fake, "Click button:\"Open\"").err();
+        let err = play(fake, "  - click: { button: \"Open\" }\n").err();
         assert!(
             matches!(
                 err,
@@ -1113,7 +1127,11 @@ mod tests {
 
     #[test]
     fn paste_sets_the_clipboard_then_presses_cmd_v() {
-        let fake = play(Fake::default(), "Paste \"curl -fsSL https://example.com\"").unwrap();
+        let fake = play(
+            Fake::default(),
+            "  - paste: \"curl -fsSL https://example.com\"\n",
+        )
+        .unwrap();
         assert_eq!(
             fake.calls,
             [
@@ -1128,7 +1146,7 @@ mod tests {
         let fake = Fake::default()
             .reply(FOCUS, "false\n")
             .reply(FOCUS, "true\n");
-        let fake = play(fake, "Focus \"Visual Studio Code\"").unwrap();
+        let fake = play(fake, "  - focus: \"Visual Studio Code\"\n").unwrap();
         assert_eq!(
             fake.calls,
             [
@@ -1140,7 +1158,7 @@ mod tests {
 
     #[test]
     fn focus_fails_when_the_app_stays_behind() {
-        let err = play(Fake::default(), "Focus \"Terminal\" 1s").err();
+        let err = play(Fake::default(), "  - focus: \"Terminal\"\n").err();
         assert_eq!(err, Some(Error::NotFrontmost("Terminal".into())));
     }
 
@@ -1160,7 +1178,7 @@ mod tests {
         let fake = Fake::default()
             .reply(POINTER, "0,0\n")
             .reply(DOCK, DOCK_ITEMS);
-        let err = play(fake, "Click dock:Safari").err();
+        let err = play(fake, "  - click: { dock: Safari }\n").err();
         assert_eq!(err, Some(Error::NotInDock("Safari".into())));
     }
 
@@ -1169,7 +1187,7 @@ mod tests {
         let fake = Fake::default()
             .reply(POINTER, "0,0\n")
             .reply(DOCK, "Terminal\t1488\t986\n");
-        let err = play(fake, "Click dock:Terminal").err();
+        let err = play(fake, "  - click: { dock: Terminal }\n").err();
         assert!(
             matches!(
                 err,
@@ -1223,7 +1241,7 @@ mod tests {
             .reply(WINDOWS, "Finder\n")
             .reply(WINDOWS, "Finder\n")
             .reply(WINDOWS, "Finder\nrunner — -bash — 80×24\n");
-        let fake = play(fake, "WaitWindow \"bash\"").unwrap();
+        let fake = play(fake, "  - waitWindow: { title: \"bash\" }\n").unwrap();
         assert_eq!(fake.calls, ["osascript windows"; 3]);
         assert_eq!(fake.slept, POLL_INTERVAL * 2);
     }
@@ -1231,7 +1249,7 @@ mod tests {
     #[test]
     fn wait_window_ignores_case() {
         let fake = Fake::default().reply(WINDOWS, "Finder\no3s - Visual Studio Code\n");
-        let fake = play(fake, "WaitWindow \"VISUAL studio\"").unwrap();
+        let fake = play(fake, "  - waitWindow: { title: \"VISUAL studio\" }\n").unwrap();
         assert_eq!(fake.calls, ["osascript windows"]);
     }
 
@@ -1252,7 +1270,7 @@ mod tests {
             fake = fake.reply(WINDOWS, "Finder\n");
         }
         let mut desktop = Desktop::new(fake);
-        let err = steps("WaitWindow \"Nope\" 1s")
+        let err = steps("  - waitWindow: { title: \"Nope\", timeout: 1s }\n")
             .iter()
             .try_for_each(|s| desktop.play(s))
             .err();
@@ -1265,7 +1283,7 @@ mod tests {
     #[test]
     fn wait_window_stops_on_osascript_failure() {
         let fake = Fake::default().exit(WINDOWS, 1);
-        let err = play(fake, "WaitWindow \"Terminal\"").err();
+        let err = play(fake, "  - waitWindow: { title: \"Terminal\" }\n").err();
         assert!(
             matches!(err, Some(Error::Exit { code: Some(1), .. })),
             "{err:?}"
@@ -1278,7 +1296,11 @@ mod tests {
             .exit("sh -c", 1)
             .exit("sh -c", 127)
             .reply("sh -c", "");
-        let fake = play(fake, "WaitUntil \"command -v code\" 1m").unwrap();
+        let fake = play(
+            fake,
+            "  - waitUntil: { command: \"command -v code\", timeout: 1m }\n",
+        )
+        .unwrap();
         assert_eq!(fake.calls, ["sh -c command -v code"; 3]);
         assert_eq!(fake.slept, UNTIL_POLL_INTERVAL * 2);
     }
@@ -1293,7 +1315,7 @@ mod tests {
             fake = fake.exit("sh -c", 1);
         }
         let mut desktop = Desktop::new(fake);
-        let err = steps("WaitUntil \"slow-check\" 1m")
+        let err = steps("  - waitUntil: { command: \"slow-check\", timeout: 1m }\n")
             .iter()
             .try_for_each(|s| desktop.play(s))
             .err();
@@ -1315,7 +1337,7 @@ mod tests {
             ..Fake::default()
         };
         let mut desktop = Desktop::new(fake);
-        let err = steps("WaitUntil \"curl -s http://stuck\" 1m")
+        let err = steps("  - waitUntil: { command: \"curl -s http://stuck\", timeout: 1m }\n")
             .iter()
             .try_for_each(|s| desktop.play(s))
             .err();
@@ -1342,7 +1364,7 @@ mod tests {
             fake = fake.exit("sh -c", 1);
         }
         let mut desktop = Desktop::new(fake);
-        let step = &steps("WaitUntil \"false\" 30m")[0];
+        let step = &steps("  - waitUntil: { command: \"false\", timeout: 30m }\n")[0];
         assert_eq!(
             desktop.play_while(step, &mut alive_for(3)),
             Err(Error::Interrupted)
@@ -1353,7 +1375,7 @@ mod tests {
     #[test]
     fn sleeps_end_when_the_recording_stops() {
         let mut desktop = Desktop::new(Fake::default());
-        let step = &steps("Sleep 5m")[0];
+        let step = &steps("  - sleep: 5m\n")[0];
         assert_eq!(
             desktop.play_while(step, &mut alive_for(3)),
             Err(Error::Interrupted)
@@ -1367,13 +1389,17 @@ mod tests {
         for _ in 0..1000 {
             fake = fake.exit("sh -c", 1);
         }
-        let err = play(fake, "WaitUntil \"false\" 2s").err();
+        let err = play(fake, "  - waitUntil: { command: \"false\", timeout: 2s }\n").err();
         assert_eq!(err, Some(Error::ConditionNotMet("false".into())));
     }
 
     #[test]
     fn warp_markers_touch_nothing() {
-        let fake = play(Fake::default(), "Warp \"x\" 1s\nEndWarp").unwrap();
+        let fake = play(
+            Fake::default(),
+            "  - warp:\n      label: \"x\"\n      length: 1s\n      steps: []\n",
+        )
+        .unwrap();
         assert_eq!(fake.calls, Vec::<String>::new());
         assert_eq!(fake.slept, Duration::ZERO);
     }
@@ -1382,7 +1408,7 @@ mod tests {
     fn garbled_pointer_location_is_an_error() {
         for output in ["huh\n", "1,2,3\n", "-5,7\n", "+5,7\n"] {
             let fake = Fake::default().reply(POINTER, output);
-            let err = play(fake, "MoveTo 1,1").err();
+            let err = play(fake, "  - moveTo: { point: { x: 1, y: 1 } }\n").err();
             assert!(
                 matches!(
                     err,

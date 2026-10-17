@@ -1,5 +1,5 @@
 name: taperec
-description: Record scripted macOS tutorial videos from .tape files.
+description: Record scripted macOS tutorial videos from YAML tapes.
 author: Hansehart
 branding:
   icon: film

@@ -1,9 +1,10 @@
 //! Command-line entry point for `taperec`.
 
 use std::env;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
-use taperec::{app, cli};
+use taperec::{app, cli, tape};
 
 fn main() -> ExitCode {
     match cli::parse(env::args_os().skip(1)) {
@@ -14,6 +15,24 @@ fn main() -> ExitCode {
         Ok(cli::Invocation::Help) => {
             eprintln!("{}", cli::USAGE);
             ExitCode::SUCCESS
+        }
+        Ok(cli::Invocation::Schema) => match io::stdout().write_all(tape::schema().as_bytes()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("taperec: cannot write the schema: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Ok(cli::Invocation::Check(tapes)) => {
+            let failures = app::check(&tapes);
+            for failure in &failures {
+                eprintln!("taperec: {failure}");
+            }
+            if failures.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Ok(cli::Invocation::Record(args)) => match app::record(&args, env::consts::OS) {
             Ok(path) => {

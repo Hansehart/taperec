@@ -21,19 +21,19 @@ check() {
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/tutorials"
-touch "$work/tutorials/b.tape" "$work/tutorials/a.tape" "$work/intro.tape"
+touch "$work/tutorials/b.yaml" "$work/tutorials/a.yaml" "$work/intro.yaml"
 
 check "globs expand in order" \
-    "$work/intro.tape
-$work/tutorials/a.tape
-$work/tutorials/b.tape" \
-    "$(tapes_from "$work/intro.tape
-$work/tutorials/*.tape")"
+    "$work/intro.yaml
+$work/tutorials/a.yaml
+$work/tutorials/b.yaml" \
+    "$(tapes_from "$work/intro.yaml
+$work/tutorials/*.yaml")"
 check "a glob without matches fails" \
-    "::error::no tape matches $work/missing/*.tape" \
-    "$( (tapes_from "$work/missing/*.tape") 2>&1 || true)"
-check "blank lines are skipped" "$work/intro.tape" "$(tapes_from "
-$work/intro.tape
+    "::error::no tape matches $work/missing/*.yaml" \
+    "$( (tapes_from "$work/missing/*.yaml") 2>&1 || true)"
+check "blank lines are skipped" "$work/intro.yaml" "$(tapes_from "
+$work/intro.yaml
 ")"
 
 printf '[package]\nname = "demo"\nversion = "1.2.3"\nedition = "2021"\n\n[dependencies]\nother = { version = "9.9.9" }\n' > "$work/Cargo.toml"
@@ -65,6 +65,9 @@ check "the icon agent is booted out and disabled" \
     "launchctl bootout gui/$(id -u)/com.apple.iconservices.iconservicesagent
 launchctl disable gui/$(id -u)/com.apple.iconservices.iconservicesagent" \
     "$(cat "$work/calls")"
+
+check "failshots drop the tape extension" "/out/intro-failshot.png" "$(failshot_path /out tutorials/intro.yaml)"
+check "failshots keep dots inside the name" "/out/v1.2-failshot.png" "$(failshot_path /out v1.2.yaml)"
 
 [ "$failures" -eq 0 ] || { echo "$failures failed"; exit 1; }
 echo "all passed"

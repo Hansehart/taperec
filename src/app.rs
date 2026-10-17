@@ -60,10 +60,17 @@ impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read { path, detail } => write!(f, "cannot read {}: {detail}", path.display()),
-            // `path:line: message`, the shape editors and terminals link to.
-            Self::Parse { path, error } => match error.line {
-                0 => write!(f, "{}: {}", path.display(), error.kind),
-                line => write!(f, "{}:{line}: {}", path.display(), error.kind),
+            // `path:line:column: message`, the shape editors and terminals link to.
+            Self::Parse { path, error } => match &error.at {
+                tape::Where::Position { line, column } => write!(
+                    f,
+                    "{}:{line}:{column}: {}",
+                    path.display(),
+                    error.message
+                ),
+                tape::Where::Step(_) | tape::Where::Document => {
+                    write!(f, "{}: {error}", path.display())
+                }
             },
             Self::NotMacOs(os) => write!(
                 f,
@@ -95,20 +102,31 @@ impl From<recorder::Error> for AppError {
     }
 }
 
+/// Reads and parses each tape without recording, returning one error per invalid tape.
+#[must_use]
+pub fn check(tapes: &[PathBuf]) -> Vec<AppError> {
+    tapes.iter().filter_map(|path| load(path).err()).collect()
+}
+
+/// Reads and parses the tape at `path`.
+fn load(path: &Path) -> Result<tape::Tape, AppError> {
+    let source = fs::read_to_string(path).map_err(|e| AppError::Read {
+        path: path.to_owned(),
+        detail: e.to_string(),
+    })?;
+    tape::parse(&source).map_err(|error| AppError::Parse {
+        path: path.to_owned(),
+        error,
+    })
+}
+
 /// Plays `args.tape` while recording it and returns the video path.
 ///
 /// # Errors
 ///
 /// Fails before recording on a bad tape or a non-macOS host; a failed step aborts the recording.
 pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
-    let source = fs::read_to_string(&args.tape).map_err(|e| AppError::Read {
-        path: args.tape.clone(),
-        detail: e.to_string(),
-    })?;
-    let tape = tape::parse(&source).map_err(|error| AppError::Parse {
-        path: args.tape.clone(),
-        error,
-    })?;
+    let tape = load(&args.tape)?;
     if os != "macos" {
         return Err(AppError::NotMacOs(os.to_owned()));
     }
@@ -232,14 +250,14 @@ mod tests {
 
     fn tape_file(name: &str, content: &str) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("taperec-app-{}-{name}.tape", std::process::id()));
+            std::env::temp_dir().join(format!("taperec-app-{}-{name}.yaml", std::process::id()));
         fs::write(&path, content).unwrap();
         path
     }
 
     #[test]
     fn missing_tape_is_a_read_error() {
-        let path = PathBuf::from("/nonexistent/demo.tape");
+        let path = PathBuf::from("/nonexistent/demo.yaml");
         let err = record(&args(path.clone()), "macos").unwrap_err();
         assert!(
             matches!(&err, AppError::Read { path: p, .. } if *p == path),
@@ -248,24 +266,44 @@ mod tests {
     }
 
     #[test]
-    fn invalid_tape_is_a_parse_error_with_line() {
-        let path = tape_file("invalid", "Output a.mp4\nJump 3\n");
+    fn invalid_tape_is_a_parse_error_with_its_position() {
+        let path = tape_file("invalid", "output: a.mp4\nsteps:\n  - jump: 3\n");
         let err = record(&args(path.clone()), "macos").unwrap_err();
         assert!(
             matches!(
-                err,
+                &err,
                 AppError::Parse {
-                    error: tape::ParseError { line: 2, .. },
+                    error: tape::ParseError {
+                        at: tape::Where::Position { line: 3, .. },
+                        ..
+                    },
                     ..
                 }
             ),
             "{err:?}"
         );
+        assert!(
+            err.to_string()
+                .starts_with(&format!("{}:3:", path.display())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_reports_each_invalid_tape() {
+        let good = tape_file("good", "output: a.mp4\nsteps:\n  - sleep: 1s\n");
+        let bad = tape_file("bad", "output: a.mp4\nsteps:\n  - sleep: 5x\n");
+        let errors = check(&[good, bad.clone()]);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            matches!(&errors[0], AppError::Parse { path, .. } if *path == bad),
+            "{errors:?}"
+        );
     }
 
     #[test]
     fn records_only_on_macos() {
-        let path = tape_file("notmacos", "Output a.mp4\nSleep 1s\n");
+        let path = tape_file("notmacos", "output: a.mp4\nsteps:\n  - sleep: 1s\n");
         assert_eq!(
             record(&args(path), "linux"),
             Err(AppError::NotMacOs("linux".into()))
