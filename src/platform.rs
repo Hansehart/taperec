@@ -163,7 +163,7 @@ pub enum Error {
     Untypable {
         /// The text.
         text: String,
-        /// cliclick's message.
+        /// Why the platform could not type it.
         detail: String,
     },
     /// A program that ran past its time limit and was stopped.

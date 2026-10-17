@@ -16,6 +16,36 @@ permissions:
   contents: read
 
 jobs:
+  # The desktop helper against a fixture window, without recording anything.
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Test the helper's parsing
+        run: swift test --package-path tools/desktop
+      - name: Build the helper and the fixture
+        run: |
+          swift build -c release --package-path tools/desktop
+          swiftc -O tests/fixtures/Fixture.swift -o "$RUNNER_TEMP/taperec-fixture"
+      - name: Check the desktop contract
+        run: tests/desktop-contract.sh "$(swift build -c release --package-path tools/desktop --show-bin-path)/taperec-desktop" "$RUNNER_TEMP/taperec-fixture"
+      - name: Screenshot
+        if: failure()
+        run: screencapture -x "$RUNNER_TEMP/desktop.png"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: action-test-desktop-${{ matrix.runner }}
+          path: ${{ runner.temp }}/desktop.png
+          if-no-files-found: ignore
+
   record:
     strategy:
       fail-fast: false

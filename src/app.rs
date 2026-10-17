@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::cli::Args;
 use crate::desktop::Desktop;
-use crate::platform::macos::{FfmpegScreen, MacScripts};
+use crate::platform::macos::{FfmpegScreen, Helper};
 use crate::platform::{Platform, Recorder};
 use crate::process::SystemRunner;
 use crate::recorder::FPS;
@@ -149,7 +149,7 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     // The raw capture, timeline and captions stay next to the video, for `taperec render`.
     let stem = tape.output.as_str().trim_end_matches(".mp4");
     let raw = args.out_dir.join(format!("{stem}.raw.mkv"));
-    let mut desktop = Desktop::new(MacScripts::new(SystemRunner::default()));
+    let mut desktop = Desktop::new(Helper::new(SystemRunner::default()));
     let marked = capture(
         &tape,
         &mut desktop,
