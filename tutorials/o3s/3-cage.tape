@@ -19,7 +19,9 @@ WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker exec \"$(/Appl
 EndWarp
 Sleep 2s
 Key ctrl+`
-Sleep 4s
+# The terminal is ready once its shell runs inside the cage.
+WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker exec \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" pgrep -f -- '--init-file .*shellIntegration'" 2m
+Sleep 1s
 Paste "curl -sI https://github.com | head -1"
 Key return
 Sleep 2s
