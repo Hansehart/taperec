@@ -260,124 +260,9 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use crate::platform::fake::{Call, FakePlatform};
     use crate::platform::Control;
     use crate::tape;
-
-    /// What the player asked the platform to do.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum Call {
-        MoveTo(Point),
-        Click,
-        Key(String),
-        Type(char),
-        Paste(String),
-        Windows,
-        Buttons,
-        Dock,
-        Focus(String),
-        Shell(String),
-    }
-
-    /// A platform that records typed calls, answers queries from queues and keeps virtual time.
-    #[derive(Default)]
-    struct FakePlatform {
-        calls: Vec<Call>,
-        clock: Duration,
-        /// Virtual time each query takes.
-        query_cost: Duration,
-        windows: VecDeque<Vec<String>>,
-        buttons: VecDeque<Vec<Control>>,
-        dock: Vec<(String, Point)>,
-        focus: VecDeque<bool>,
-        shell: VecDeque<bool>,
-    }
-
-    impl FakePlatform {
-        /// Spends one query's time, failing like a real query cut off at `limit`.
-        fn query(&mut self, call: Call, limit: Option<Duration>) -> Result<(), Error> {
-            self.calls.push(call);
-            if let Some(limit) = limit.filter(|limit| self.query_cost > *limit) {
-                self.clock += limit;
-                return Err(Error::TimedOut {
-                    command: "query".into(),
-                });
-            }
-            self.clock += self.query_cost;
-            Ok(())
-        }
-    }
-
-    impl Platform for FakePlatform {
-        fn sleep(&mut self, duration: Duration) {
-            self.clock += duration;
-        }
-
-        fn elapsed(&mut self) -> Duration {
-            self.clock
-        }
-
-        fn pointer(&mut self) -> Result<Point, Error> {
-            Ok(Point { x: 0, y: 0 })
-        }
-
-        fn move_to(&mut self, point: Point) -> Result<(), Error> {
-            self.calls.push(Call::MoveTo(point));
-            Ok(())
-        }
-
-        fn click(&mut self) -> Result<(), Error> {
-            self.calls.push(Call::Click);
-            Ok(())
-        }
-
-        fn key(&mut self, chord: &KeyChord) -> Result<(), Error> {
-            self.calls.push(Call::Key(format!("{chord:?}")));
-            Ok(())
-        }
-
-        fn type_char(&mut self, c: char) -> Result<(), Error> {
-            self.calls.push(Call::Type(c));
-            Ok(())
-        }
-
-        fn paste(&mut self, text: &str) -> Result<(), Error> {
-            self.calls.push(Call::Paste(text.into()));
-            Ok(())
-        }
-
-        fn windows(&mut self, limit: Option<Duration>) -> Result<Vec<String>, Error> {
-            self.query(Call::Windows, limit)?;
-            Ok(self.windows.pop_front().unwrap_or_default())
-        }
-
-        fn buttons(&mut self, limit: Option<Duration>) -> Result<Vec<Control>, Error> {
-            self.query(Call::Buttons, limit)?;
-            Ok(self.buttons.pop_front().unwrap_or_default())
-        }
-
-        fn dock(&mut self) -> Result<Vec<(String, Point)>, Error> {
-            self.calls.push(Call::Dock);
-            Ok(self.dock.clone())
-        }
-
-        fn focus(&mut self, app: &AppName, limit: Option<Duration>) -> Result<bool, Error> {
-            self.query(Call::Focus(app.as_str().into()), limit)?;
-            Ok(self.focus.pop_front().unwrap_or(false))
-        }
-
-        fn shell(
-            &mut self,
-            command: &ShellCommand,
-            limit: Option<Duration>,
-        ) -> Result<bool, Error> {
-            self.query(Call::Shell(command.as_str().into()), limit)?;
-            Ok(self.shell.pop_front().unwrap_or(false))
-        }
-
-        fn screenshot(&mut self, _path: &Path) -> Result<(), Error> {
-            Ok(())
-        }
-    }
 
     fn play(platform: FakePlatform, items: &str) -> Result<FakePlatform, Error> {
         let steps = tape::parse(&format!("output: t.mp4\nsteps:\n{items}"))
@@ -421,7 +306,7 @@ mod tests {
         assert_eq!(moves.len(), 30);
         assert_eq!(moves.last(), Some(&Point { x: 900, y: 600 }));
         assert_eq!(platform.calls.last(), Some(&Call::Click));
-        assert_eq!(platform.clock, Duration::from_millis(500));
+        assert_eq!(platform.now(), Duration::from_millis(500));
     }
 
     #[test]
@@ -484,7 +369,7 @@ mod tests {
                 Call::Focus("Terminal".into())
             ]
         );
-        assert_eq!(platform.clock, POLL_INTERVAL);
+        assert_eq!(platform.now(), POLL_INTERVAL);
     }
 
     #[test]
@@ -522,7 +407,7 @@ mod tests {
         };
         let platform = play(platform, "  - waitUntil: { command: test -f x }\n").unwrap();
         assert_eq!(platform.calls.len(), 3);
-        assert_eq!(platform.clock, UNTIL_POLL_INTERVAL * 2);
+        assert_eq!(platform.now(), UNTIL_POLL_INTERVAL * 2);
     }
 
     #[test]
@@ -536,7 +421,7 @@ mod tests {
             platform.calls,
             [Call::Type('h'), Call::Type('i'), Call::Type('!')]
         );
-        assert_eq!(platform.clock, Duration::from_millis(160));
+        assert_eq!(platform.now(), Duration::from_millis(160));
     }
 
     #[test]

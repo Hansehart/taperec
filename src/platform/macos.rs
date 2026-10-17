@@ -1,10 +1,11 @@
 //! macOS through `cliclick`, `osascript`, `sh` and `screencapture`.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use super::{Control, Error, Platform};
+use super::{CaptureError, Control, Error, Platform, Recorder};
 use crate::process::{Output, Runner};
+use crate::recorder::{self, Recording};
 use crate::tape::{AppName, Key, KeyChord, Point, ShellCommand};
 use crate::units;
 
@@ -248,6 +249,41 @@ impl<R: Runner> Platform for MacScripts<R> {
         self.runner
             .run("screencapture", &["-x", &path], None)
             .map(drop)
+    }
+}
+
+/// The screen captured by ffmpeg's avfoundation input, its frames stamped with wall-clock time.
+#[derive(Default)]
+pub struct FfmpegScreen {
+    recording: Option<Recording>,
+}
+
+impl Recorder for FfmpegScreen {
+    fn start(&mut self, out: &Path) -> Result<(), CaptureError> {
+        let args = recorder::ffmpeg_args(recorder::FPS, out);
+        self.recording = Some(Recording::start("ffmpeg", &args)?);
+        Ok(())
+    }
+
+    fn check(&mut self) -> Result<(), CaptureError> {
+        self.recording.as_mut().map_or(Ok(()), Recording::check)
+    }
+
+    fn stop(&mut self) -> Result<(), CaptureError> {
+        self.recording.take().map_or(Ok(()), Recording::stop)
+    }
+
+    fn abort(&mut self) {
+        if let Some(recording) = self.recording.take() {
+            recording.abort();
+        }
+    }
+
+    /// Seconds since the Unix epoch, the clock `-use_wallclock_as_timestamps` stamps frames with.
+    fn clock(&self) -> Duration {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
     }
 }
 

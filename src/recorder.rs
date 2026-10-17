@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
@@ -24,6 +24,9 @@ pub(crate) const MP4: [&str; 2] = ["-movflags", "+faststart"];
 
 /// How long the recorder gets to exit after `q` before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// Recording frame rate.
+pub const FPS: NonZeroU32 = NonZeroU32::MIN.saturating_add(29);
 
 /// The main display as ffmpeg's avfoundation input lists it.
 const SCREEN: &str = "Capture screen 0";
@@ -191,11 +194,10 @@ impl std::error::Error for Error {}
 pub struct Recording {
     program: String,
     child: Option<Child>,
-    path: PathBuf,
 }
 
 impl Recording {
-    /// Starts `program args…`, which writes to `path`, with stdin piped.
+    /// Starts `program args…` with stdin piped.
     ///
     /// # Errors
     ///
@@ -204,7 +206,7 @@ impl Recording {
         clippy::disallowed_methods,
         reason = "the recorder module is the seam that runs ffmpeg"
     )]
-    pub fn start(program: &str, args: &[OsString], path: PathBuf) -> Result<Self, Error> {
+    pub fn start(program: &str, args: &[OsString]) -> Result<Self, Error> {
         let child = Command::new(program)
             .args(args)
             .stdin(Stdio::piped())
@@ -214,7 +216,6 @@ impl Recording {
         Ok(Self {
             program: program.to_owned(),
             child: Some(child),
-            path,
         })
     }
 
@@ -281,11 +282,9 @@ impl Recording {
         }
     }
 
-    /// Kills the recorder and removes its partial file.
+    /// Kills the recorder, leaving its partial file to inspect.
     pub fn abort(mut self) {
         self.kill();
-        // Removal is best effort.
-        let _ = fs::remove_file(&self.path);
     }
 
     fn stop_error(&self, detail: String) -> Error {
@@ -313,6 +312,7 @@ impl Drop for Recording {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn strings(args: &[OsString]) -> Vec<String> {
         args.iter()
@@ -341,7 +341,7 @@ mod tests {
     /// A stand-in recorder that stores the first byte it reads into `path`.
     fn fake_ffmpeg(path: &Path) -> Recording {
         let script = format!("head -c1 > '{}'", path.display());
-        Recording::start("sh", &sh(&script), path.to_owned()).unwrap()
+        Recording::start("sh", &sh(&script)).unwrap()
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn stop_ends_a_recorder_that_lingers_after_q() {
-        let recording = Recording::start("sh", &sh("exec sleep 30"), temp("stuck")).unwrap();
+        let recording = Recording::start("sh", &sh("exec sleep 30")).unwrap();
         let started = std::time::Instant::now();
         assert_eq!(recording.stop_within(Duration::from_millis(200)), Ok(()));
         assert!(
@@ -396,8 +396,7 @@ mod tests {
 
     #[test]
     fn stop_reports_failed_exit() {
-        let recording =
-            Recording::start("sh", &sh("head -c1 >/dev/null; exit 3"), temp("exit")).unwrap();
+        let recording = Recording::start("sh", &sh("head -c1 >/dev/null; exit 3")).unwrap();
         assert_eq!(recording.stop(), Err(exit(3)));
     }
 
@@ -406,13 +405,13 @@ mod tests {
         clippy::disallowed_methods,
         reason = "lets a real child process write before it is killed"
     )]
-    fn abort_kills_and_deletes_partial_file() {
+    fn abort_kills_and_keeps_the_partial_file() {
         let path = temp("abort");
         let script = format!("echo partial > '{}'; sleep 30", path.display());
-        let recording = Recording::start("sh", &sh(&script), path.clone()).unwrap();
+        let recording = Recording::start("sh", &sh(&script)).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         recording.abort();
-        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "partial\n");
     }
 
     #[test]
@@ -428,7 +427,7 @@ mod tests {
         reason = "waits for a real child process to exit"
     )]
     fn check_reports_early_exit() {
-        let mut recording = Recording::start("sh", &sh("exit 4"), temp("early")).unwrap();
+        let mut recording = Recording::start("sh", &sh("exit 4")).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(recording.check(), Err(exit(4)));
     }
@@ -473,7 +472,7 @@ mod tests {
 
     #[test]
     fn missing_program_is_a_spawn_error() {
-        let err = Recording::start("/nonexistent/ffmpeg", &[], temp("spawn")).unwrap_err();
+        let err = Recording::start("/nonexistent/ffmpeg", &[]).unwrap_err();
         assert!(matches!(err, Error::Spawn { .. }), "{err:?}");
     }
 }

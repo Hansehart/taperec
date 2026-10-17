@@ -3,20 +3,18 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use crate::cli::Args;
 use crate::desktop::Desktop;
-use crate::platform::macos::MacScripts;
+use crate::platform::macos::{FfmpegScreen, MacScripts};
+use crate::platform::{Platform, Recorder};
 use crate::process::SystemRunner;
-use crate::recorder::Recording;
+use crate::recorder::FPS;
 use crate::{desktop, recorder, tape, warp};
 
-/// Recording frame rate.
-const FPS: NonZeroU32 = NonZeroU32::MIN.saturating_add(29);
 /// The program that renders a caption to a PNG: `taperec-caption <text> <out.png>`.
 const CAPTION_TOOL: &str = "taperec-caption";
 
@@ -147,44 +145,60 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
         detail: e.to_string(),
     })?;
 
-    let mut desktop = Desktop::new(MacScripts::new(SystemRunner::default()));
     let path = args.out_dir.join(tape.output.as_str());
     // The raw capture, timeline and captions stay next to the video, for `taperec render`.
     let stem = tape.output.as_str().trim_end_matches(".mp4");
-    let capture_path = args.out_dir.join(format!("{stem}.raw.mkv"));
-    let ffmpeg = recorder::ffmpeg_args(FPS, &capture_path);
-    let mut recording = Recording::start("ffmpeg", &ffmpeg, capture_path.clone())?;
+    let raw = args.out_dir.join(format!("{stem}.raw.mkv"));
+    let mut desktop = Desktop::new(MacScripts::new(SystemRunner::default()));
+    let marked = capture(
+        &tape,
+        &mut desktop,
+        &mut FfmpegScreen::default(),
+        &raw,
+        args.failshot.as_deref(),
+    )?;
+    let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
+    save_timeline(&timeline_path, stem, marked)?;
+    render(&timeline_path, &path)?;
+    Ok(path)
+}
+
+/// Plays `tape` on `desktop` while `recorder` captures it into `raw`, returning the warps on the capture's clock.
+///
+/// A failing step saves a screenshot to `failshot`, aborts capture and ends the recording.
+///
+/// # Errors
+///
+/// The first step or capture failure.
+pub fn capture<P: Platform, R: Recorder>(
+    tape: &tape::Tape,
+    desktop: &mut Desktop<P>,
+    recorder: &mut R,
+    raw: &Path,
+    failshot: Option<&str>,
+) -> Result<Vec<warp::Marked>, AppError> {
+    recorder.start(raw)?;
     let mut timeline = warp::Timeline::default();
     for step in &tape.steps {
-        // Marks share the wall clock the capture stamps its frames with.
-        timeline.mark(step, wall_clock());
+        // Marks share the clock the capture stamps its frames with.
+        timeline.mark(step, recorder.clock());
         // A stopped recorder ends the step at once and explains the failure.
-        let played = desktop.play_while(step, &mut || recording.check().is_ok());
-        let result = recording
+        let played = desktop.play_while(step, &mut || recorder.check().is_ok());
+        let result = recorder
             .check()
             .map_err(AppError::from)
             .and(played.map_err(AppError::from));
         if let Err(error) = result {
             // Best effort; the step's error is the one reported.
-            if let Some(path) = args.failshot.as_deref() {
+            if let Some(path) = failshot {
                 let _ = desktop.screenshot(path);
             }
-            recording.abort();
+            recorder.abort();
             return Err(error);
         }
     }
-    recording.stop()?;
-    let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
-    save_timeline(&timeline_path, stem, timeline.into_marked())?;
-    render(&timeline_path, &path)?;
-    Ok(path)
-}
-
-/// Seconds since the Unix epoch, the clock ffmpeg stamps captured frames with.
-fn wall_clock() -> Duration {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
+    recorder.stop()?;
+    Ok(timeline.into_marked())
 }
 
 /// Renders each warp's caption next to the capture and writes the timeline file pointing at them.
@@ -331,5 +345,104 @@ mod tests {
             record(&args(path), "linux"),
             Err(AppError::NotMacOs("linux".into()))
         );
+    }
+
+    mod capture_stage {
+        use std::collections::VecDeque;
+        use std::time::Duration;
+
+        use super::super::*;
+        use crate::platform::fake::{Capture, FakePlatform};
+
+        fn tape(items: &str) -> tape::Tape {
+            tape::parse(&format!("output: t.mp4\nsteps:\n{items}")).unwrap()
+        }
+
+        #[test]
+        fn marks_warps_on_the_capture_clock_between_start_and_stop() {
+            let platform = FakePlatform::default();
+            let mut recorder = platform.recorder();
+            let mut desktop = Desktop::new(platform);
+            let raw = Path::new("/out/t.raw.mkv");
+            let marked = capture(
+                &tape("  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - sleep: 1s\n"),
+                &mut desktop,
+                &mut recorder,
+                raw,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                recorder.events,
+                [Capture::Started(raw.to_owned()), Capture::Stopped]
+            );
+            assert_eq!(marked.len(), 1);
+            assert_eq!(marked[0].label, "Build");
+            // The warp opens after the 2 s sleep and closes after its own 10 s.
+            assert_eq!(marked[0].span.start, Duration::from_secs(2));
+            assert_eq!(marked[0].span.end, Duration::from_secs(12));
+            assert_eq!(marked[0].span.length, Duration::from_secs(5));
+        }
+
+        #[test]
+        fn a_failing_step_saves_the_failshot_and_aborts_capture() {
+            let platform = FakePlatform::default();
+            let mut recorder = platform.recorder();
+            let mut desktop = Desktop::new(platform);
+            let err = capture(
+                &tape("  - click: { button: Open, timeout: 1s }\n  - sleep: 1s\n"),
+                &mut desktop,
+                &mut recorder,
+                Path::new("/out/t.raw.mkv"),
+                Some("/out/t-failshot.png"),
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                AppError::Desktop(desktop::Error::ControlNotFound("Open".into()))
+            );
+            assert_eq!(recorder.events.last(), Some(&Capture::Aborted));
+            assert!(desktop.into_platform().calls.contains(
+                &crate::platform::fake::Call::Screenshot("/out/t-failshot.png".into())
+            ),);
+        }
+
+        #[test]
+        fn a_recorder_that_dies_interrupts_the_tape() {
+            let platform = FakePlatform {
+                shell: VecDeque::new(),
+                ..FakePlatform::default()
+            };
+            let mut recorder = platform.recorder();
+            recorder.dies_after = Some(3);
+            let mut desktop = Desktop::new(platform);
+            let err = capture(
+                &tape("  - waitUntil: { command: never, timeout: 10m }\n"),
+                &mut desktop,
+                &mut recorder,
+                Path::new("/out/t.raw.mkv"),
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(err, AppError::Record(_)), "{err:?}");
+            assert_eq!(recorder.events.last(), Some(&Capture::Aborted));
+        }
+
+        #[test]
+        fn a_tape_without_warps_stops_cleanly_with_no_marks() {
+            let platform = FakePlatform::default();
+            let mut recorder = platform.recorder();
+            let mut desktop = Desktop::new(platform);
+            let marked = capture(
+                &tape("  - paste: echo hi\n  - key: return\n"),
+                &mut desktop,
+                &mut recorder,
+                Path::new("/out/t.raw.mkv"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(marked, []);
+            assert_eq!(recorder.events.last(), Some(&Capture::Stopped));
+        }
     }
 }
