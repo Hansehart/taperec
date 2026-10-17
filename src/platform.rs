@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 
+#[cfg(test)]
+pub(crate) mod fake;
 pub mod macos;
 
 /// What a desktop must offer to play tapes: input, what is on screen, a shell and a clock.
@@ -102,6 +104,39 @@ pub trait Platform {
     /// Fails if the capture fails.
     fn screenshot(&mut self, path: &Path) -> Result<(), Error>;
 }
+
+/// Captures the screen into a file whose frames carry [`Recorder::clock`] times; one implementation per OS.
+pub trait Recorder {
+    /// Starts capturing into `out`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if capture cannot start.
+    fn start(&mut self, out: &Path) -> Result<(), CaptureError>;
+
+    /// Confirms capture is still running.
+    ///
+    /// # Errors
+    ///
+    /// Fails once capture has stopped on its own.
+    fn check(&mut self) -> Result<(), CaptureError>;
+
+    /// Ends capture, leaving a complete file.
+    ///
+    /// # Errors
+    ///
+    /// Fails if capture does not end cleanly.
+    fn stop(&mut self) -> Result<(), CaptureError>;
+
+    /// Ends capture at once, leaving the partial file to inspect.
+    fn abort(&mut self);
+
+    /// Now, on the clock the captured frames carry.
+    fn clock(&self) -> Duration;
+}
+
+/// Why capture failed.
+pub use crate::recorder::Error as CaptureError;
 
 /// Why a step failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
