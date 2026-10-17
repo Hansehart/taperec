@@ -15,7 +15,7 @@ Sleep 800ms
 Key return
 Warp "Building the cage" 5s
 # VS Code is connected once its extension host runs inside the cage.
-WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker exec \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" pgrep -f -- --type=extensionHost" 30m
+WaitUntil "/Applications/Docker.app/Contents/Resources/bin/docker exec \"$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)\" pgrep -f -- --type=extensionHost" 45m
 EndWarp
 Sleep 2s
 Key ctrl+`

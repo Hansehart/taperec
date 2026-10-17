@@ -30,7 +30,7 @@ jobs:
       matrix:
         section: ${{ fromJSON(inputs.sections) }}
     runs-on: macos-26-intel
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       SECTION: ${{ matrix.section }}
     steps:
