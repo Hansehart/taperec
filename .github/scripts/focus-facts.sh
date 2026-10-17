@@ -18,12 +18,13 @@ return wanted is frontId or frontPath contains "/" & appName & ".app/"
 end run
 SCRIPT
 # Taperec polls the script, since activation completes a moment later.
-for app in Terminal TextEdit Docker Terminal; do
+for app in Terminal Docker "Docker Desktop" Terminal "Docker Desktop"; do
   for attempt in 1 2 3 4 5; do
     started=$SECONDS
     out=$(perl -e "alarm 15; exec @ARGV" osascript /tmp/focus.applescript "$app" 2>&1); code=$?
     echo "focus $app attempt $attempt: exit $code after $((SECONDS - started))s: $out"
     [ "$out" = true ] && break
+    perl -e "alarm 10; exec @ARGV" osascript -e 'tell application "System Events" to tell (first process whose frontmost is true) to return (name as text) & " | " & (bundle identifier as text) & " | " & (POSIX path of (application file as alias))' 2>&1 | sed 's/^/  front: /'
     sleep 1
   done
 done
