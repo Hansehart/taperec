@@ -59,6 +59,7 @@ public enum Command: Equatable {
     case buttons
     case dock
     case focus(String)
+    case record(String)
 
     /// Parses the arguments after the program name.
     public init?(_ arguments: [String]) {
@@ -79,6 +80,7 @@ public enum Command: Equatable {
         case "buttons" where arguments.count == 1: self = .buttons
         case "dock" where arguments.count == 1: self = .dock
         case "focus" where arguments.count == 2 && !arguments[1].isEmpty: self = .focus(arguments[1])
+        case "record" where arguments.count == 2 && !arguments[1].isEmpty: self = .record(arguments[1])
         default: return nil
         }
     }
@@ -95,5 +97,5 @@ public enum Exit: Int32 {
 /// The usage line for a malformed command.
 public let usage = """
     usage: taperec-desktop pointer | move X Y | click | key CHORD | type CHAR | paste TEXT
-                           | windows | buttons | dock | focus APP
+                           | windows | buttons | dock | focus APP | record MOVIE
     """

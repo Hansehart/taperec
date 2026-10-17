@@ -1,13 +1,15 @@
-//! Screen recording and video encoding with ffmpeg.
+//! The recorder process, and video encoding with ffmpeg.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::units::{self, Finer};
 
@@ -22,45 +24,14 @@ pub(crate) const H264: [&str; 8] = [
 /// ffmpeg options for an MP4 that streams from its first byte.
 pub(crate) const MP4: [&str; 2] = ["-movflags", "+faststart"];
 
+/// The metadata tag holding the clock time of a capture's first frame, in seconds.
+pub const START_TAG: &str = "com.taperec.start";
+
 /// How long the recorder gets to exit after `q` before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// Recording frame rate.
 pub const FPS: NonZeroU32 = NonZeroU32::MIN.saturating_add(29);
-
-/// The main display as ffmpeg's avfoundation input lists it.
-const SCREEN: &str = "Capture screen 0";
-
-/// ffmpeg arguments that record the screen, cursor and clicks at `fps` into a Matroska `out`.
-///
-/// Frames carry wall-clock times, the clock the timeline marks warps on.
-#[must_use]
-pub fn ffmpeg_args(fps: NonZeroU32, out: &Path) -> Vec<OsString> {
-    let fps = fps.to_string();
-    #[rustfmt::skip]
-    let capture = [
-        // ffmpeg reads `q` once per stats period, here every 50 ms.
-        "-stats_period", "0.05",
-        "-use_wallclock_as_timestamps", "1",
-        "-f", "avfoundation", "-capture_cursor", "1", "-capture_mouse_clicks", "1",
-        "-pixel_format", "bgr0", "-framerate", &fps, "-i", SCREEN,
-    ];
-    // Matroska keeps the wall-clock times whole; written live, one-second clusters reach the disk
-    // as they close, so a killed recorder loses under a second.
-    #[rustfmt::skip]
-    let stream = [
-        "-tune", "zerolatency", "-copyts", "-flush_packets", "1",
-        "-f", "matroska", "-live", "1", "-cluster_time_limit", "1000",
-    ];
-    QUIET
-        .into_iter()
-        .chain(capture)
-        .chain(H264)
-        .chain(stream)
-        .map(OsString::from)
-        .chain([out.as_os_str().to_owned()])
-        .collect()
-}
 
 /// ffmpeg arguments that copy a capture into an MP4 starting at time zero.
 #[must_use]
@@ -88,7 +59,7 @@ pub fn encode(program: &str, args: &[OsString], out: &Path) -> Result<(), Error>
     })
 }
 
-/// When the video at `path` starts, from the container's start time: the wall-clock time of its first frame.
+/// When the video at `path` starts: the clock time of its first frame, from its [`START_TAG`].
 ///
 /// # Errors
 ///
@@ -98,7 +69,7 @@ pub fn probe_start(program: &str, path: &Path) -> Result<Duration, Error> {
         "-v",
         "error",
         "-show_entries",
-        "format=start_time",
+        &format!("format_tags={START_TAG}"),
         "-of",
         "csv=p=0",
     ]
@@ -149,6 +120,13 @@ pub enum Error {
         /// The I/O error.
         detail: String,
     },
+    /// A recorder that did not report it was recording in time.
+    NotReady {
+        /// The program.
+        program: String,
+        /// How long it had.
+        limit: Duration,
+    },
     /// A program that exited with a failure.
     Exit {
         /// The program.
@@ -174,6 +152,9 @@ impl fmt::Display for Error {
         match self {
             Self::Spawn { program, detail } => write!(f, "could not start {program}: {detail}"),
             Self::Stop { program, detail } => write!(f, "could not stop {program}: {detail}"),
+            Self::NotReady { program, limit } => {
+                write!(f, "{program} did not start recording within {limit:?}")
+            }
             Self::Exit {
                 program,
                 code: Some(code),
@@ -182,7 +163,12 @@ impl fmt::Display for Error {
                 program,
                 code: None,
             } => write!(f, "{program} was killed"),
-            Self::Probe(output) => write!(f, "expected a duration from ffprobe, got {output:?}"),
+            Self::Probe(output) => {
+                write!(
+                    f,
+                    "expected a {START_TAG} time from ffprobe, got {output:?}"
+                )
+            }
         }
     }
 }
@@ -194,32 +180,74 @@ impl std::error::Error for Error {}
 pub struct Recording {
     program: String,
     child: Option<Child>,
+    /// The recorder's stdout, line by line.
+    lines: Receiver<String>,
 }
 
 impl Recording {
-    /// Starts `program args…` with stdin piped.
+    /// Starts `program args…` with stdin piped and its stdout lines read.
     ///
     /// # Errors
     ///
     /// [`Error::Spawn`] for a failed start.
     #[expect(
         clippy::disallowed_methods,
-        reason = "the recorder module is the seam that runs ffmpeg"
+        reason = "the recorder module is the seam that runs the recorder"
     )]
     pub fn start(program: &str, args: &[OsString]) -> Result<Self, Error> {
-        let child = Command::new(program)
+        let mut child = Command::new(program)
             .args(args)
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .spawn()
             .map_err(|e| Error::spawn(program, &e))?;
+        let (send, lines) = mpsc::channel();
+        if let Some(stdout) = child.stdout.take() {
+            thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    // A dropped receiver only means nobody waits any more.
+                    let _ = send.send(line);
+                }
+            });
+        }
         Ok(Self {
             program: program.to_owned(),
             child: Some(child),
+            lines,
         })
     }
 
-    /// Sends ffmpeg's quit key `q` and ends the recorder after a five-second grace.
+    /// Waits up to `limit` for the recorder to print `line`, its sign that frames are being written.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Exit`] if the recorder exits first, [`Error::NotReady`] past `limit`.
+    pub fn wait_for(&mut self, line: &str, limit: Duration) -> Result<(), Error> {
+        let deadline = Instant::now() + limit;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(printed) if printed == line => return Ok(()),
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(Error::NotReady {
+                        program: self.program.clone(),
+                        limit,
+                    });
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Stdout closes as the recorder exits; reap it for its status.
+                    let status = self.child.as_mut().map(Child::wait);
+                    return Err(Error::Exit {
+                        program: self.program.clone(),
+                        code: status.and_then(Result::ok).and_then(|s| s.code()),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Sends the quit key `q`, closes stdin and ends the recorder after a five-second grace.
     ///
     /// # Errors
     ///
@@ -246,7 +274,7 @@ impl Recording {
         let waited = crate::process::wait_within(&mut child, Some(grace))
             .map_err(|e| self.stop_error(e.to_string()))?;
         let Some(status) = waited else {
-            // macOS screen capture can stall in shutdown; the stream is complete by now.
+            // A recorder that lingers past the grace has written what it can.
             let _ = child.kill();
             let _ = child.wait();
             return sent.map_err(|detail| self.stop_error(detail));
@@ -342,24 +370,6 @@ mod tests {
     fn fake_ffmpeg(path: &Path) -> Recording {
         let script = format!("head -c1 > '{}'", path.display());
         Recording::start("sh", &sh(&script)).unwrap()
-    }
-
-    #[test]
-    fn records_the_macos_screen_as_h264_on_the_wall_clock() {
-        #[rustfmt::skip]
-        let expected = [
-            "-hide_banner", "-loglevel", "error", "-y",
-            "-stats_period", "0.05",
-            "-use_wallclock_as_timestamps", "1",
-            "-f", "avfoundation", "-capture_cursor", "1", "-capture_mouse_clicks", "1",
-            "-pixel_format", "bgr0", "-framerate", "30", "-i", "Capture screen 0",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-            "-tune", "zerolatency", "-copyts", "-flush_packets", "1",
-            "-f", "matroska", "-live", "1", "-cluster_time_limit", "1000",
-            "/out/demo.raw.mkv",
-        ];
-        let args = ffmpeg_args(NonZeroU32::new(30).unwrap(), Path::new("/out/demo.raw.mkv"));
-        assert_eq!(strings(&args), expected);
     }
 
     #[test]
@@ -468,6 +478,41 @@ mod tests {
         // `echo` prints its arguments back.
         let err = probe_start("echo", Path::new("/x.mkv")).unwrap_err();
         assert!(matches!(err, Error::Probe(_)), "{err:?}");
+    }
+
+    #[test]
+    fn waits_until_the_recorder_reports_recording() {
+        let mut recording =
+            Recording::start("sh", &sh("echo warming; echo recording; cat > /dev/null")).unwrap();
+        assert_eq!(
+            recording.wait_for("recording", Duration::from_secs(5)),
+            Ok(())
+        );
+        assert_eq!(recording.stop(), Ok(()));
+    }
+
+    #[test]
+    fn a_recorder_that_never_reports_is_not_ready() {
+        let mut recording = Recording::start("sh", &sh("sleep 5")).unwrap();
+        assert_eq!(
+            recording.wait_for("recording", Duration::from_millis(100)),
+            Err(Error::NotReady {
+                program: "sh".into(),
+                limit: Duration::from_millis(100),
+            })
+        );
+    }
+
+    #[test]
+    fn a_recorder_that_exits_before_recording_reports_its_code() {
+        let mut recording = Recording::start("sh", &sh("echo starting; exit 3")).unwrap();
+        assert_eq!(
+            recording.wait_for("recording", Duration::from_secs(5)),
+            Err(Error::Exit {
+                program: "sh".into(),
+                code: Some(3),
+            })
+        );
     }
 
     #[test]

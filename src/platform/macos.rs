@@ -1,16 +1,21 @@
 //! macOS through the `taperec-desktop` helper, `sh` and `screencapture`.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::{CaptureError, Control, Error, Platform, Recorder};
 use crate::process::{Output, Runner};
-use crate::recorder::{self, Recording};
+use crate::recorder::Recording;
 use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 use crate::units;
 
 /// The Swift helper that drives input and reads the screen (`tools/desktop`).
 const HELPER: &str = "taperec-desktop";
+/// What the helper prints once the first frame is written.
+const RECORDING: &str = "recording";
+/// How long screen capture may take to start.
+const RECORDING_LIMIT: Duration = Duration::from_secs(30);
 /// The helper's exit code for a character outside the keyboard layout.
 const UNTYPABLE: i32 = 3;
 
@@ -133,16 +138,17 @@ impl<R: Runner> Platform for Helper<R> {
     }
 }
 
-/// The screen captured by ffmpeg's avfoundation input, its frames stamped with wall-clock time.
+/// The screen captured by the helper through `ScreenCaptureKit`, its frames stamped with wall-clock time.
 #[derive(Default)]
-pub struct FfmpegScreen {
+pub struct ScreenRecorder {
     recording: Option<Recording>,
 }
 
-impl Recorder for FfmpegScreen {
+impl Recorder for ScreenRecorder {
     fn start(&mut self, out: &Path) -> Result<(), CaptureError> {
-        let args = recorder::ffmpeg_args(recorder::FPS, out);
-        self.recording = Some(Recording::start("ffmpeg", &args)?);
+        let mut recording = Recording::start(HELPER, &record_args(out))?;
+        recording.wait_for(RECORDING, RECORDING_LIMIT)?;
+        self.recording = Some(recording);
         Ok(())
     }
 
@@ -160,12 +166,17 @@ impl Recorder for FfmpegScreen {
         }
     }
 
-    /// Seconds since the Unix epoch, the clock `-use_wallclock_as_timestamps` stamps frames with.
+    /// Seconds since the Unix epoch, the clock the helper stamps frames with.
     fn clock(&self) -> Duration {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
     }
+}
+
+/// Helper arguments that record the screen into `out`.
+fn record_args(out: &Path) -> [OsString; 2] {
+    [OsString::from("record"), out.as_os_str().to_owned()]
 }
 
 /// Parses `buttons` output.
@@ -331,6 +342,17 @@ mod tests {
     /// Dock geometry as reported on a macos-26 runner.
     const DOCK_ITEMS: &str = "Finder\t196\t986\t68\t84\nSystem Settings\t1420\t986\t68\t84\n\
                               Terminal\t1488\t986\t68\t84\nmissing value\t1556\t986\t30\t84\n";
+
+    #[test]
+    fn records_through_the_helper() {
+        assert_eq!(
+            record_args(Path::new("/out/demo.raw.mov")),
+            [
+                OsString::from("record"),
+                OsString::from("/out/demo.raw.mov")
+            ]
+        );
+    }
 
     #[test]
     fn sleep_waits() {
