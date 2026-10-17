@@ -32,6 +32,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var started = false
     var complete = 0, skipped = 0, busy = 0, firstLatency = 0.0
     var last: CMSampleBuffer?
+    var pending: CMSampleBuffer?
+    var late = 0
     var firstPTS = CMTime.zero
 
     init(out: URL) throws {
@@ -46,6 +48,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 AVVideoAverageBitRateKey: 12_000_000,
                 AVVideoExpectedSourceFrameRateKey: 30,
                 AVVideoMaxKeyFrameIntervalKey: 30,
+                AVVideoAllowFrameReorderingKey: false,
             ],
         ])
         input.expectsMediaDataInRealTime = true
@@ -55,6 +58,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, buffer.isValid else { return }
+        // A frame the writer was too busy for goes in at the next callback, so the newest change is never lost.
+        if let waiting = pending, input.isReadyForMoreMediaData {
+            pending = nil
+            late += 1
+            if !input.append(waiting) { log("late append failed") }
+        }
         guard let infos = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false)
                 as? [[SCStreamFrameInfo: Any]],
               let raw = infos.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete
@@ -80,17 +89,17 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             started = true
             log(String(format: "first frame epoch %.6f, %.1f ms after capture", pts.seconds, firstLatency * 1000))
         }
-        guard input.isReadyForMoreMediaData else {
-            busy += 1
-            log(String(format: "busy at +%.2f s", CMTimeSubtract(pts, firstPTS).seconds))
-            return
-        }
         var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: pts, decodeTimeStamp: .invalid)
         var retimed: CMSampleBuffer?
         CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: buffer, sampleTimingEntryCount: 1,
                                               sampleTimingArray: &timing, sampleBufferOut: &retimed)
         guard let retimed else { return }
         last = retimed
+        guard input.isReadyForMoreMediaData else {
+            if pending != nil { busy += 1 }
+            pending = retimed
+            return
+        }
         if !input.append(retimed) {
             log("append failed: \(String(describing: writer.error))")
         }
@@ -103,7 +112,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func finish() {
         queue.async {
-            self.log("frames: \(self.complete) complete, \(self.skipped) skipped, \(self.busy) dropped busy")
+            self.log("frames: \(self.complete) complete, \(self.skipped) skipped, \(self.late) late, \(self.busy) replaced while busy")
             guard self.started else { self.log("no frames"); exit(1) }
             // The screen may have stood still since the last frame; showing it again makes the file last until now.
             let now = CMTimeAdd(CMClockGetTime(CMClockGetHostTimeClock()), self.offset!)
@@ -117,6 +126,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             if let again, !self.input.append(again) { self.log("final append failed") }
             self.log(String(format: "stopped at +%.2f s", CMTimeSubtract(now, self.firstPTS).seconds))
             self.input.markAsFinished()
+            self.writer.endSession(atSourceTime: now)
             self.writer.finishWriting {
                 self.log("finished: \(self.writer.status.rawValue) \(String(describing: self.writer.error))")
                 exit(self.writer.status == .completed ? 0 : 1)
