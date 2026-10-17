@@ -97,16 +97,19 @@ const CLIPBOARD_SCRIPT: &[&str] = &[
 ];
 
 /// Lists the named windows of foreground processes, one title per line.
+///
+/// A process that comes or goes while the list is read is skipped, so a launching app never fails the wait.
 const WINDOWS_SCRIPT: &[&str] = &[
     "set out to \"\"",
-    "tell application \"System Events\"",
-    "repeat with p in (every process whose background only is false)",
-    "repeat with w in windows of p",
-    "set t to name of w",
+    "tell application \"System Events\" to set ps to every process whose background only is false",
+    "repeat with p in ps",
+    "try",
+    "tell application \"System Events\" to set ts to name of every window of p",
+    "repeat with t in ts",
     "if t is not missing value then set out to out & t & linefeed",
     "end repeat",
+    "end try",
     "end repeat",
-    "end tell",
     "return out",
 ];
 
