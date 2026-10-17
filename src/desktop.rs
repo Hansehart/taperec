@@ -79,15 +79,13 @@ const CONTROLS_SCRIPT: &[&str] = &[
 ];
 
 /// Brings the app named by the first argument to the front and reports whether it is there.
-///
-/// The frontmost process counts when it lives inside the app's bundle, as helper apps like Docker Desktop's window do.
 const FOCUS_SCRIPT: &[&str] = &[
     "on run argv",
     "set appName to item 1 of argv",
     "tell application appName to activate",
-    "set wanted to POSIX path of (path to application appName)",
-    "tell application \"System Events\" to set frontPath to POSIX path of (application file of first process whose frontmost is true)",
-    "return frontPath starts with wanted",
+    "set wanted to id of application appName",
+    "tell application \"System Events\" to set frontId to bundle identifier of first process whose frontmost is true",
+    "return wanted is frontId",
     "end run",
 ];
 

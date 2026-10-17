@@ -26,7 +26,7 @@ EndWarp
 Click button:"Allow" 2m
 Sleep 1.5s
 # Hide its welcome window and carry on in Terminal.
-Focus "Docker"
+Focus "Docker Desktop"
 Key cmd+h
 Focus "Terminal"
 Sleep 1s
