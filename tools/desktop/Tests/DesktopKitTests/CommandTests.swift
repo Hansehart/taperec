@@ -33,7 +33,7 @@ final class CommandTests: XCTestCase {
     }
 
     func testNamedKeysMatchTaperec() throws {
-        // taperec's Rust test writes its NAMED_KEYS list here.
+        // taperec's Rust test keeps this copy of its NAMED_KEYS current.
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().appendingPathComponent("named-keys.txt")
         let rust = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)

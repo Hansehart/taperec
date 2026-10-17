@@ -9,6 +9,6 @@ let package = Package(
     targets: [
         .target(name: "DesktopKit"),
         .executableTarget(name: "taperec-desktop", dependencies: ["DesktopKit"]),
-        .testTarget(name: "DesktopKitTests", dependencies: ["DesktopKit"]),
+        .testTarget(name: "DesktopKitTests", dependencies: ["DesktopKit"], exclude: ["named-keys.txt"]),
     ]
 )
