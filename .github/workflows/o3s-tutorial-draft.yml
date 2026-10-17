@@ -7,7 +7,7 @@ on:
       run:
         description: What to record
         type: choice
-        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts, clock, mkv]
+        options: [sections, full, typer, gatekeeper, wallpaper, keyloss, focus, pts, clock, mkv, sck]
         default: sections
       sections:
         description: Sections to record, a JSON list
@@ -274,3 +274,30 @@ jobs:
       - name: Matroska probe
         timeout-minutes: 10
         run: .github/scripts/mkv-probe.sh out
+
+  # Records through ScreenCaptureKit and ffmpeg and reports clock, crash safety and CPU.
+  sck-probe:
+    if: inputs.run == 'sck'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: ScreenCaptureKit probe
+        timeout-minutes: 15
+        run: .github/scripts/sck-probe.sh out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sck-probe-${{ matrix.runner }}
+          path: |
+            out/*.png
+            out/frames/
+            out/*.log
+            out/*.txt
+            out/clean-remux.mp4
