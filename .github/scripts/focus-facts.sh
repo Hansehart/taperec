@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
-# Runs each AppleScript statement Focus could use on its own, ten seconds each, to see which ones block.
+# Runs taperec's Focus script for Terminal, TextEdit and Docker, polled as taperec does.
 set -uo pipefail
-
 source action/main.sh
 set +e
 icon_agent_off
 open -a Terminal; open -a TextEdit; sleep 8
-try() {
-  local started=$SECONDS out
-  out=$(perl -e 'alarm 10; exec @ARGV' osascript -e "$2" 2>&1); local code=$?
-  printf '%-34s exit %3s after %2ss: %s\n' "$1" "$code" "$((SECONDS - started))" "$out"
-}
-for app in Terminal TextEdit; do
-  echo "== $app"
-  try "activate" "tell application \"$app\" to activate"
-  try "path to application" "POSIX path of (path to application \"$app\")"
-  try "id of application" "id of application \"$app\""
-  try "System Events activate (frontmost)" "tell application \"System Events\" to set frontmost of process \"$app\" to true"
-  sleep 1
-  try "front process name" "tell application \"System Events\" to name of first process whose frontmost is true"
-  try "front bundle id" "tell application \"System Events\" to bundle identifier of first process whose frontmost is true"
-  try "front application file" "tell application \"System Events\" to POSIX path of (application file of first process whose frontmost is true)"
+cat > /tmp/focus.applescript <<'SCRIPT'
+on run argv
+set appName to item 1 of argv
+tell application appName to activate
+set wanted to id of application appName
+tell application "System Events"
+set p to first process whose frontmost is true
+set {frontId, frontPath} to {bundle identifier of p, POSIX path of (application file of p)}
+end tell
+return wanted is frontId or frontPath contains "/" & appName & ".app/"
+end run
+SCRIPT
+# Taperec polls the script, since activation completes a moment later.
+for app in Terminal TextEdit Docker Terminal; do
+  for attempt in 1 2 3 4 5; do
+    started=$SECONDS
+    out=$(perl -e "alarm 15; exec @ARGV" osascript /tmp/focus.applescript "$app" 2>&1); code=$?
+    echo "focus $app attempt $attempt: exit $code after $((SECONDS - started))s: $out"
+    [ "$out" = true ] && break
+    sleep 1
+  done
 done
