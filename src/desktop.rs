@@ -89,6 +89,13 @@ const FOCUS_SCRIPT: &[&str] = &[
     "end run",
 ];
 
+/// Puts the first argument on the clipboard.
+const CLIPBOARD_SCRIPT: &[&str] = &[
+    "on run argv",
+    "set the clipboard to item 1 of argv",
+    "end run",
+];
+
 /// Lists the named windows of foreground processes, one title per line.
 const WINDOWS_SCRIPT: &[&str] = &[
     "set out to \"\"",
@@ -359,6 +366,7 @@ impl<R: Runner> Desktop<R> {
             // Warps mark the recording; the caller times them.
             Step::Warp { .. } | Step::EndWarp => {}
             Step::Type(text) => self.type_text(text)?,
+            Step::Paste(text) => self.paste(text)?,
             Step::Key(chord) => self.press(chord)?,
         }
         Ok(())
@@ -436,6 +444,14 @@ impl<R: Runner> Desktop<R> {
             }
         }
         Ok(())
+    }
+
+    /// Puts `text` on the clipboard and pastes it with `cmd+v`, one keystroke however long the text.
+    fn paste(&mut self, text: &str) -> Result<(), Error> {
+        let mut args = osascript_args(CLIPBOARD_SCRIPT);
+        args.push(text);
+        self.runner.run("osascript", &args, None)?;
+        self.cliclick(&["kd:cmd", "t:v", "ku:cmd"]).map(drop)
     }
 
     /// Holds the chord's modifiers, presses its key, and releases them.
@@ -826,6 +842,7 @@ mod tests {
                     ("windows", WINDOWS_SCRIPT),
                     ("controls", CONTROLS_SCRIPT),
                     ("focus", FOCUS_SCRIPT),
+                    ("clipboard", CLIPBOARD_SCRIPT),
                 ];
                 let (name, rest) = scripts
                     .iter()
@@ -1088,6 +1105,18 @@ mod tests {
                 })
             ),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn paste_sets_the_clipboard_then_presses_cmd_v() {
+        let fake = play(Fake::default(), "Paste \"curl -fsSL https://example.com\"").unwrap();
+        assert_eq!(
+            fake.calls,
+            [
+                "osascript clipboard curl -fsSL https://example.com",
+                "cliclick kd:cmd t:v ku:cmd"
+            ]
         );
     }
 

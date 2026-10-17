@@ -12,6 +12,7 @@
 //! WaitWindow "Terminal"
 //! Focus "Terminal"
 //! Type "echo \"hi\""
+//! Paste "git clone https://github.com/Hansehart/o3s.git"
 //! Key cmd+shift+p
 //! Warp "Installing" 3s
 //! WaitUntil "command -v code" 5m
@@ -240,6 +241,8 @@ pub enum Step {
     EndWarp,
     /// Type text keystroke by keystroke.
     Type(String),
+    /// Put text on the clipboard and paste it with a single keystroke.
+    Paste(String),
     /// Press a key chord.
     Key(KeyChord),
 }
@@ -454,6 +457,11 @@ fn parse_line(text: &str) -> Result<Line, ParseErrorKind> {
             let (text, rest) = quoted(rest)?;
             end(rest)?;
             Step::Type(text)
+        }
+        "Paste" => {
+            let (text, rest) = quoted(rest)?;
+            end(rest)?;
+            Step::Paste(text)
         }
         "WaitWindow" => {
             let (name, rest) = quoted(rest)?;
@@ -1172,6 +1180,15 @@ mod tests {
             kind("Click button:\"Open\" soon"),
             ParseErrorKind::BadDuration("soon".into())
         );
+    }
+
+    #[test]
+    fn paste_takes_quoted_text() {
+        assert_eq!(
+            steps("Paste \"echo \\\"hi\\\"\""),
+            [Step::Paste("echo \"hi\"".into())]
+        );
+        assert_eq!(kind("Paste echo"), ParseErrorKind::ExpectedQuote);
     }
 
     #[test]

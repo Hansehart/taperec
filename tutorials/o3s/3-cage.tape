@@ -10,7 +10,7 @@ Focus "Visual Studio Code"
 Sleep 3s
 Key cmd+shift+p
 Sleep 800ms
-Type "Dev Containers: Reopen in Container"
+Paste "Dev Containers: Reopen in Container"
 Sleep 800ms
 Key return
 Warp "Building the cage" 5s
@@ -20,9 +20,9 @@ EndWarp
 Sleep 2s
 Key ctrl+`
 Sleep 4s
-Type "curl -sI https://github.com | head -1"
+Paste "curl -sI https://github.com | head -1"
 Key return
 Sleep 2s
-Type "curl -sSI --max-time 5 https://example.com"
+Paste "curl -sSI --max-time 5 https://example.com"
 Key return
 Sleep 4s
