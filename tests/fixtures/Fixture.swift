@@ -21,6 +21,12 @@ final class Fixture: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.title = "taperec fixture"
+        // ⌘V reaches the field through the Edit menu, as in any app.
+        let edit = NSMenuItem()
+        edit.submenu = NSMenu(title: "Edit")
+        edit.submenu?.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        NSApp.mainMenu = NSMenu()
+        NSApp.mainMenu?.addItem(edit)
         for (index, label) in ["Cancel", "Open"].enumerated() {
             let button = NSButton(title: label, target: self, action: #selector(pressed(_:)))
             button.frame = NSRect(x: 260 + index * 100, y: 30, width: 90, height: 32)

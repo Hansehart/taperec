@@ -25,7 +25,7 @@ eventually() {
     return 1
 }
 
-logged() { grep -qxF -- "$1" "$log"; }
+logged() { grep -qxF -- "$1" "$log" 2>/dev/null; }
 # The last line the fixture logged.
 last_logged() { tail -n 1 "$log"; }
 # Whether the fixture logged at least $1 entered lines.
