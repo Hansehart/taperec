@@ -9,6 +9,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG]
        taperec check <tape.yaml>...
+       taperec render <name.timeline.yaml> [--out FILE]
        taperec schema\n";
 
 /// Runs the binary, returning its exit code and stderr.
@@ -116,6 +117,17 @@ fn check_validates_without_recording() -> TestResult {
     assert_eq!(code, Some(1));
     assert!(
         message.starts_with(&format!("taperec: {bad}:3:")),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn render_reports_a_missing_timeline() -> TestResult {
+    let (code, message) = taperec(&["render", "/nonexistent/a.timeline.yaml"])?;
+    assert_eq!(code, Some(1));
+    assert!(
+        message.starts_with("taperec: timeline /nonexistent/a.timeline.yaml: "),
         "{message}"
     );
     Ok(())

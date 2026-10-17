@@ -6,7 +6,7 @@ use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use crate::cli::Args;
 use crate::desktop::{Desktop, SystemRunner};
@@ -54,6 +54,13 @@ pub enum AppError {
     Caption(recorder::Error),
     /// Rendering the warped video failed.
     Render(recorder::Error),
+    /// A timeline file that cannot be read or written.
+    Timeline {
+        /// The timeline path.
+        path: PathBuf,
+        /// What went wrong.
+        detail: String,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -84,6 +91,9 @@ impl fmt::Display for AppError {
             Self::Warp(error) => error.fmt(f),
             Self::Caption(error) => write!(f, "rendering a warp caption failed: {error}"),
             Self::Render(error) => write!(f, "rendering warps failed: {error}"),
+            Self::Timeline { path, detail } => {
+                write!(f, "timeline {}: {detail}", path.display())
+            }
         }
     }
 }
@@ -137,20 +147,15 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
 
     let mut desktop = Desktop::new(SystemRunner::default());
     let path = args.out_dir.join(tape.output.as_str());
-    let warped = tape
-        .steps
-        .iter()
-        .any(|s| matches!(s, tape::Step::Warp { .. }));
-    // The capture streams into a hidden file and is finished into `path` afterwards.
-    let capture_path = args
-        .out_dir
-        .join(format!(".{}.capture.ts", tape.output.as_str()));
+    // The raw capture, timeline and captions stay next to the video, for `taperec render`.
+    let stem = tape.output.as_str().trim_end_matches(".mp4");
+    let capture_path = args.out_dir.join(format!("{stem}.raw.mkv"));
     let ffmpeg = recorder::ffmpeg_args(FPS, &capture_path);
     let mut recording = Recording::start("ffmpeg", &ffmpeg, capture_path.clone())?;
-    let started = Instant::now();
     let mut timeline = warp::Timeline::default();
     for step in &tape.steps {
-        timeline.mark(step, started.elapsed());
+        // Marks share the wall clock the capture stamps its frames with.
+        timeline.mark(step, wall_clock());
         // A stopped recorder ends the step at once and explains the failure.
         let played = desktop.play_while(step, &mut || recording.check().is_ok());
         let result = recording
@@ -166,68 +171,84 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
             return Err(error);
         }
     }
-    let stopped_at = started.elapsed();
     recording.stop()?;
-    let marked = warped.then(|| timeline.into_marked());
-    let finished = finish(&capture_path, marked, stopped_at, &path);
-    keep_on_error(&finished, &capture_path);
-    finished?;
+    let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
+    save_timeline(&timeline_path, stem, timeline.into_marked())?;
+    render(&timeline_path, &path)?;
     Ok(path)
 }
 
-/// Turns a capture into the video at `out`, applying warps marked on the tape's clock.
-fn finish(
-    capture: &Path,
-    marked: Option<Vec<warp::Marked>>,
-    stopped_at: Duration,
-    out: &Path,
-) -> Result<(), AppError> {
-    let Some(marked) = marked else {
-        return recorder::encode("ffmpeg", &recorder::remux_args(capture, out), out)
-            .map_err(AppError::Render);
-    };
-    let zeroed = capture.with_extension("mp4");
-    recorder::encode("ffmpeg", &recorder::remux_args(capture, &zeroed), &zeroed)
-        .map_err(AppError::Render)?;
-    // Frames carry host-clock times, so the capture ends at `stopped_at`.
-    let captured = recorder::probe_duration("ffprobe", &zeroed)?;
-    let aligned = warp::align(marked, stopped_at.saturating_sub(captured));
-    // Warps shorter than a frame play as normal footage.
-    let visible = warp::visible(aligned, Duration::from_secs(1) / FPS.get());
-    let rendered = render_warps(&zeroed, visible, out);
-    keep_on_error(&rendered, &zeroed);
-    rendered
+/// Seconds since the Unix epoch, the clock ffmpeg stamps captured frames with.
+fn wall_clock() -> Duration {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
 }
 
-/// Renders `capture` with `marked` warps applied into `out`.
-fn render_warps(capture: &Path, marked: Vec<warp::Marked>, out: &Path) -> Result<(), AppError> {
-    let mut captions = Vec::with_capacity(marked.len());
+/// Renders each warp's caption next to the capture and writes the timeline file pointing at them.
+fn save_timeline(path: &Path, stem: &str, marked: Vec<warp::Marked>) -> Result<(), AppError> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut warps = Vec::with_capacity(marked.len());
+    for (index, mark) in marked.into_iter().enumerate() {
+        let caption = format!("{stem}.warp{index}.png");
+        let text = warp::caption(&mark.label, mark.span.end.saturating_sub(mark.span.start));
+        let image = dir.join(&caption);
+        let args = [OsString::from(text), image.clone().into_os_string()];
+        recorder::encode(CAPTION_TOOL, &args, &image).map_err(AppError::Caption)?;
+        warps.push(warp::WarpEntry {
+            label: mark.label,
+            start: mark.span.start,
+            end: mark.span.end,
+            length: mark.span.length,
+            caption,
+        });
+    }
+    let file = warp::TimelineFile {
+        video: format!("{stem}.raw.mkv"),
+        warps,
+    };
+    let timeline_error = |detail: String| AppError::Timeline {
+        path: path.to_owned(),
+        detail,
+    };
+    let text = serde_saphyr::to_string(&file).map_err(|e| timeline_error(e.to_string()))?;
+    fs::write(path, text).map_err(|e| timeline_error(e.to_string()))
+}
+
+/// Builds the video at `out` from a recording's timeline file, its raw capture and captions; needs ffmpeg only.
+///
+/// # Errors
+///
+/// An unreadable timeline, or ffmpeg failing to probe, remux or render.
+pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
+    let timeline_error = |detail: String| AppError::Timeline {
+        path: timeline.to_owned(),
+        detail,
+    };
+    let text = fs::read_to_string(timeline).map_err(|e| timeline_error(e.to_string()))?;
+    let file: warp::TimelineFile =
+        serde_saphyr::from_str(&text).map_err(|e| timeline_error(e.to_string()))?;
+    let dir = timeline.parent().unwrap_or(Path::new("."));
+    let capture = dir.join(&file.video);
+    // Warps shorter than a frame play as normal footage.
+    let warps = warp::visible(file.warps, Duration::from_secs(1) / FPS.get());
+    if warps.is_empty() {
+        return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
+            .map_err(AppError::Render);
+    }
+    let start = recorder::probe_start("ffprobe", &capture)?;
+    let zeroed = std::env::temp_dir().join(format!("taperec-{}-zeroed.mp4", process::id()));
     let rendered = (|| {
-        let mut spans = Vec::with_capacity(marked.len());
-        for (index, mark) in marked.into_iter().enumerate() {
-            let image =
-                std::env::temp_dir().join(format!("taperec-{}-warp{index}.png", process::id()));
-            let text = warp::caption(&mark.label, mark.span.end.saturating_sub(mark.span.start));
-            captions.push(image.clone());
-            let args = [OsString::from(text), image.clone().into_os_string()];
-            recorder::encode(CAPTION_TOOL, &args, &image).map_err(AppError::Caption)?;
-            spans.push(mark.span);
-        }
+        recorder::encode("ffmpeg", &recorder::remux_args(&capture, &zeroed), &zeroed)
+            .map_err(AppError::Render)?;
+        let spans = warp::spans(&warps, start);
+        let captions: Vec<PathBuf> = warps.iter().map(|w| dir.join(&w.caption)).collect();
         let graph = warp::filter_graph(&spans, FPS).map_err(AppError::Warp)?;
-        let args = warp::render_args(capture, &captions, &graph, out);
+        let args = warp::render_args(&zeroed, &captions, &graph, out);
         recorder::encode("ffmpeg", &args, out).map_err(AppError::Render)
     })();
-    for image in &captions {
-        remove(image);
-    }
+    remove(&zeroed);
     rendered
-}
-
-/// Deletes an intermediate file once its step succeeded, keeping it to inspect otherwise.
-fn keep_on_error<T, E>(result: &Result<T, E>, path: &Path) {
-    if result.is_ok() {
-        remove(path);
-    }
 }
 
 /// Deletes an intermediate file, best effort.
