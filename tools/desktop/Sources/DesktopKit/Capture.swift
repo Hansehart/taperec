@@ -101,6 +101,8 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
     /// It waits half a second longer than that, so frames captured meanwhile still come later.
     func heartbeat() {
         flush()
+        debug("beat: last \(last != nil) pending \(pending != nil) ready \(input.isReadyForMoreMediaData) "
+              + "since \(now().map { CMTimeSubtract($0, appended).seconds } ?? -1) status \(writer.status.rawValue)")
         guard let last, pending == nil, input.isReadyForMoreMediaData, let now = now(),
               CMTimeSubtract(now, appended).seconds >= 1.5,
               let again = last.retimed(to: CMTimeAdd(appended, CMTime(value: 1, timescale: 1)))
@@ -110,7 +112,11 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Appends `frame` if it comes after the last one; the writer fails for good on a time going backwards.
     func append(_ frame: CMSampleBuffer) {
-        guard CMTimeCompare(frame.presentationTimeStamp, appended) > 0 else { return }
+        guard CMTimeCompare(frame.presentationTimeStamp, appended) > 0 else {
+            debug("skip \(frame.presentationTimeStamp.seconds) <= \(appended.seconds)")
+            return
+        }
+        debug("append \(frame.presentationTimeStamp.seconds)")
         appended = frame.presentationTimeStamp
         if !input.append(frame) {
             write("writing a frame failed: \(String(describing: writer.error))\n", to: .standardError)
@@ -207,6 +213,11 @@ func record(to path: String) -> Never {
         }
     }
     dispatchMain()
+}
+
+/// Temporary event log on stderr, while the still-screen heartbeat is investigated.
+func debug(_ text: String) {
+    if ProcessInfo.processInfo.environment["TAPEREC_DEBUG"] != nil { write(text + "\n", to: .standardError) }
 }
 
 /// Signal sources and the heartbeat timer live as long as the recording.
