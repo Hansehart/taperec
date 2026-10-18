@@ -9,6 +9,8 @@ import ScreenCaptureKit
 let startTag = "com.taperec.start"
 /// Frames per second; taperec's `recorder::FPS`.
 let framesPerSecond: Int32 = 30
+/// How often a still screen is shown again.
+let stillInterval = CMTime(value: 1, timescale: 10)
 
 /// Writes complete frames as they come, keeping a frame the writer is too busy for until the next callback.
 final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -96,27 +98,22 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
         append(waiting)
     }
 
-    /// Shows a still screen again a second after its last frame, so fragments keep reaching the disk.
+    /// Shows a still screen again every tenth of a second, so frames keep reaching the disk; Intel's software
+    /// encoder holds back nine frames, a second at this rate.
     ///
-    /// It waits half a second longer than that, so frames captured meanwhile still come later.
+    /// Each copy trails the clock by a quarter second, so frames captured meanwhile still come later.
     func heartbeat() {
         flush()
-        debug("beat: last \(last != nil) pending \(pending != nil) ready \(input.isReadyForMoreMediaData) "
-              + "since \(now().map { CMTimeSubtract($0, appended).seconds } ?? -1) status \(writer.status.rawValue)")
         guard let last, pending == nil, input.isReadyForMoreMediaData, let now = now(),
-              CMTimeSubtract(now, appended).seconds >= 1.5,
-              let again = last.retimed(to: CMTimeAdd(appended, CMTime(value: 1, timescale: 1)))
+              CMTimeSubtract(now, appended).seconds >= 0.25,
+              let again = last.retimed(to: CMTimeAdd(appended, stillInterval))
         else { return }
         append(again)
     }
 
     /// Appends `frame` if it comes after the last one; the writer fails for good on a time going backwards.
     func append(_ frame: CMSampleBuffer) {
-        guard CMTimeCompare(frame.presentationTimeStamp, appended) > 0 else {
-            debug("skip \(frame.presentationTimeStamp.seconds) <= \(appended.seconds)")
-            return
-        }
-        debug("append \(frame.presentationTimeStamp.seconds)")
+        guard CMTimeCompare(frame.presentationTimeStamp, appended) > 0 else { return }
         appended = frame.presentationTimeStamp
         if !input.append(frame) {
             write("writing a frame failed: \(String(describing: writer.error))\n", to: .standardError)
@@ -196,7 +193,7 @@ func record(to path: String) -> Never {
             try stream.addStreamOutput(screen, type: .screen, sampleHandlerQueue: screen.queue)
             try await stream.startCapture()
             let beat = DispatchSource.makeTimerSource(queue: screen.queue)
-            beat.schedule(deadline: .now() + 0.5, repeating: 0.5)
+            beat.schedule(deadline: .now() + stillInterval.seconds, repeating: stillInterval.seconds)
             beat.setEventHandler { screen.heartbeat() }
             beat.resume()
             heartbeats = beat
@@ -213,11 +210,6 @@ func record(to path: String) -> Never {
         }
     }
     dispatchMain()
-}
-
-/// Temporary event log on stderr, while the still-screen heartbeat is investigated.
-func debug(_ text: String) {
-    if ProcessInfo.processInfo.environment["TAPEREC_DEBUG"] != nil { write(text + "\n", to: .standardError) }
 }
 
 /// Signal sources and the heartbeat timer live as long as the recording.
