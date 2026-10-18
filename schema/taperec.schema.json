@@ -353,6 +353,10 @@
           "description": "Run with `sh -c` until it exits 0.",
           "$ref": "#/$defs/Name"
         },
+        "failWhen": {
+          "description": "Run with `sh -c` between attempts; exit 0 ends the wait as failed.",
+          "$ref": "#/$defs/Name"
+        },
         "timeout": {
           "description": "The longest wait, 15s unless given.",
           "$ref": "#/$defs/Duration"

@@ -745,6 +745,23 @@ mod tests {
     }
 
     #[test]
+    fn wait_until_runs_the_failure_check_after_a_failed_attempt() {
+        let fake = Fake::default()
+            .exit("sh -c test -f ok", 1)
+            .reply("sh -c test -f broken", "");
+        let mut desktop = Desktop::new(Helper::new(fake));
+        let err = steps("  - waitUntil: { command: test -f ok, failWhen: test -f broken }\n")
+            .iter()
+            .try_for_each(|s| desktop.play(s))
+            .err();
+        assert!(matches!(err, Some(Error::WaitFailed { .. })), "{err:?}");
+        assert_eq!(
+            desktop.into_platform().into_runner().calls,
+            ["sh -c test -f ok", "sh -c test -f broken"]
+        );
+    }
+
+    #[test]
     fn wait_until_polls_shell_until_success() {
         let fake = Fake::default()
             .exit("sh -c", 1)

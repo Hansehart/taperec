@@ -246,6 +246,8 @@ pub enum Step {
     WaitUntil {
         /// Command polled with `sh -c`.
         command: ShellCommand,
+        /// Command whose success ends the wait as failed.
+        fail_when: Option<ShellCommand>,
         /// The longest wait.
         timeout: Duration,
     },
@@ -575,6 +577,7 @@ steps:
                     }),
                     Step::WaitUntil {
                         command: ShellCommand("command -v code".into()),
+                        fail_when: None,
                         timeout: ms(300_000),
                     },
                     Step::Click(Target::Control {
@@ -679,11 +682,26 @@ steps:
             "  - focus: \"\"\n",
             "  - waitWindow: { title: \" \" }\n",
             "  - waitUntil: { command: \"\" }\n",
+            "  - waitUntil: { command: x, failWhen: \"\" }\n",
             "  - click: { button: \"\" }\n",
         ] {
             let err = error(items);
             assert!(err.message.contains("must not be empty"), "{items}: {err}");
         }
+    }
+
+    #[test]
+    fn wait_until_takes_a_failure_check() {
+        assert_eq!(
+            steps("  - waitUntil: { command: test -f ok, failWhen: test -f broken }\n"),
+            vec![Step::WaitUntil {
+                command: ShellCommand("test -f ok".into()),
+                fail_when: Some(ShellCommand("test -f broken".into())),
+                timeout: DEFAULT_WAIT,
+            }]
+        );
+        let err = error("  - waitUntil: { command: x, fail_when: y }\n");
+        assert!(err.message.contains("unknown field"), "{err}");
     }
 
     #[test]

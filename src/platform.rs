@@ -184,6 +184,13 @@ pub enum Error {
     WindowNotFound(String),
     /// A `WaitUntil` that reached its timeout.
     ConditionNotMet(String),
+    /// A `WaitUntil` whose `failWhen` succeeded first.
+    WaitFailed {
+        /// The command waited for.
+        command: String,
+        /// The command that reported the failure.
+        fail_when: String,
+    },
     /// A `button:` label that no window showed in time.
     ControlNotFound(String),
     /// A `button:` label shown by several apps, none of them frontmost.
@@ -222,6 +229,9 @@ impl fmt::Display for Error {
             Self::NotInDock(name) => write!(f, "{name} is not in the Dock"),
             Self::WindowNotFound(name) => write!(f, "no window matching {name:?} appeared"),
             Self::ConditionNotMet(command) => write!(f, "`{command}` never succeeded"),
+            Self::WaitFailed { command, fail_when } => {
+                write!(f, "`{fail_when}` reported that `{command}` cannot succeed")
+            }
             Self::ControlNotFound(label) => write!(f, "no button labelled {label:?} appeared"),
             Self::AmbiguousControl { label, apps } => write!(
                 f,

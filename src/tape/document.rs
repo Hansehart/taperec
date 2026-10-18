@@ -117,10 +117,14 @@ struct WaitWindow {
 /// A shell command to wait for.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(transform = without_defaults)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WaitUntil {
     /// Run with `sh -c` until it exits 0.
     command: Name,
+    /// Run with `sh -c` between attempts; exit 0 ends the wait as failed.
+    #[serde(default)]
+    #[schemars(with = "Name")]
+    fail_when: Option<Name>,
     /// The longest wait, 15s unless given.
     #[serde(default, deserialize_with = "de_opt_duration")]
     #[schemars(with = "DurationSchema")]
@@ -328,6 +332,7 @@ fn lower_steps(
             }),
             DocStep::WaitUntil(wait) => out.push(Step::WaitUntil {
                 command: ShellCommand(wait.command.0),
+                fail_when: wait.fail_when.map(|Name(command)| ShellCommand(command)),
                 timeout: wait.timeout.unwrap_or(DEFAULT_WAIT),
             }),
             DocStep::Sleep(length) => out.push(Step::Sleep(length)),
