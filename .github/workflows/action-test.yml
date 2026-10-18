@@ -84,8 +84,8 @@ jobs:
           ls taperec/smoke.raw.mov taperec/smoke.timeline.yaml taperec/smoke.warp0.png
           "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --out taperec/rerender.mp4
           tests/verify-video.sh taperec/rerender.mp4
-      - name: Record a still screen
-        run: tests/record-contract.sh "$RUNNER_TEMP/taperec-bin/taperec-desktop" "$RUNNER_TEMP/still"
+      - name: Record still and changing screens
+        run: tests/record-contract.sh "$RUNNER_TEMP/taperec-bin/taperec-desktop" "$RUNNER_TEMP/record"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

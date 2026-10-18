@@ -59,10 +59,13 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
               let status = infos.first?[.status] as? Int, SCFrameStatus(rawValue: status) == .complete,
               let frame = retimed(buffer)
         else {
-            // A still screen is shown again each second, so fragments keep reaching the disk.
-            if let last, pending == nil, input.isReadyForMoreMediaData, let now = now(),
-               CMTimeSubtract(now, appended).seconds >= 1, let again = last.retimed(to: now) {
-                append(again)
+            // A still screen is shown again each second at the idle frame's stream time, so fragments keep
+            // reaching the disk and times keep rising.
+            if let last, pending == nil, input.isReadyForMoreMediaData, let offset, buffer.presentationTimeStamp.isValid {
+                let time = CMTimeAdd(buffer.presentationTimeStamp, offset)
+                if CMTimeSubtract(time, appended).seconds >= 1, let again = last.retimed(to: time) {
+                    append(again)
+                }
             }
             return
         }
@@ -99,7 +102,9 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
         return frame
     }
 
+    /// Appends `frame` if it comes after the last one; the writer fails for good on a time going backwards.
     func append(_ frame: CMSampleBuffer) {
+        guard CMTimeCompare(frame.presentationTimeStamp, appended) > 0 else { return }
         appended = frame.presentationTimeStamp
         if !input.append(frame) {
             write("writing a frame failed: \(String(describing: writer.error))\n", to: .standardError)
