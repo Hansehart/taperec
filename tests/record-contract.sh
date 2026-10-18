@@ -37,7 +37,6 @@ echo q >&3
 status=0
 wait "$recorder" || status=$?
 stopped=$(now)
-exec 3>&-
 [ "$status" -eq 0 ] || fail "the recorder exited with $status"
 
 start=$(ffprobe -v error -show_entries format_tags=com.taperec.start -of csv=p=0 "$movie")
@@ -47,4 +46,27 @@ awk -v s="$start" -v b="$before" -v e="$stopped" 'BEGIN { exit !(s >= b && s <= 
     fail "the start tag $start lies outside the recording"
 awk -v d="$duration" 'BEGIN { exit !(d >= 8.4) }' || fail "the movie lasts $duration s"
 ffmpeg -v error -i "$movie" -f null - || fail "the movie does not decode"
+# Lists a movie's top-level atoms with their sizes.
+atoms() {
+    perl -e 'open my $f, "<:raw", $ARGV[0] or die; while (read($f, my $h, 8) == 8) {
+        my ($n, $t) = unpack "Na4", $h; print "$t $n\n"; last if $n < 8; seek $f, $n - 8, 1 }' "$1"
+}
+
+# A recorder killed on a still screen leaves the seconds before the kill readable.
+killed=$dir/killed.mov
+"$helper" record "$killed" <&3 >"$dir/killed.out" 2>"$dir/recorder.err" &
+recorder=$!
+for _ in $(seq 120); do
+    grep -qx recording "$dir/killed.out" && break
+    sleep 0.25
+done
+sleep 4
+kill -9 "$recorder"
+wait "$recorder" 2>/dev/null || true
+echo "killed after 4 s: $(wc -c <"$killed") bytes, atoms $(atoms "$killed" | tr '\n' ' ')"
+duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$killed") ||
+    fail "the killed movie does not open"
+awk -v d="$duration" 'BEGIN { exit !(d >= 2) }' || fail "the killed movie keeps $duration s"
+echo "the killed movie keeps $duration s"
+
 echo "the recording contract holds"
