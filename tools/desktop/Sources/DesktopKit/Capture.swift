@@ -49,26 +49,13 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, buffer.isValid else { return }
-        if let waiting = pending, input.isReadyForMoreMediaData {
-            pending = nil
-            append(waiting)
-        }
+        flush()
         // Only changed screens arrive as complete frames; idle ones carry no image.
         guard let infos = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false)
                 as? [[SCStreamFrameInfo: Any]],
               let status = infos.first?[.status] as? Int, SCFrameStatus(rawValue: status) == .complete,
               let frame = retimed(buffer)
-        else {
-            // A still screen is shown again each second at the idle frame's stream time, so fragments keep
-            // reaching the disk and times keep rising.
-            if let last, pending == nil, input.isReadyForMoreMediaData, let offset, buffer.presentationTimeStamp.isValid {
-                let time = CMTimeAdd(buffer.presentationTimeStamp, offset)
-                if CMTimeSubtract(time, appended).seconds >= 1, let again = last.retimed(to: time) {
-                    append(again)
-                }
-            }
-            return
-        }
+        else { return }
         last = frame
         if input.isReadyForMoreMediaData {
             append(frame)
@@ -100,6 +87,25 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
             write("recording\n", to: .standardOutput)
         }
         return frame
+    }
+
+    /// Appends the frame the writer was too busy for, once it is ready.
+    func flush() {
+        guard let waiting = pending, input.isReadyForMoreMediaData else { return }
+        pending = nil
+        append(waiting)
+    }
+
+    /// Shows a still screen again a second after its last frame, so fragments keep reaching the disk.
+    ///
+    /// It waits half a second longer than that, so frames captured meanwhile still come later.
+    func heartbeat() {
+        flush()
+        guard let last, pending == nil, input.isReadyForMoreMediaData, let now = now(),
+              CMTimeSubtract(now, appended).seconds >= 1.5,
+              let again = last.retimed(to: CMTimeAdd(appended, CMTime(value: 1, timescale: 1)))
+        else { return }
+        append(again)
     }
 
     /// Appends `frame` if it comes after the last one; the writer fails for good on a time going backwards.
@@ -183,6 +189,11 @@ func record(to path: String) -> Never {
                                   configuration: config, delegate: screen)
             try stream.addStreamOutput(screen, type: .screen, sampleHandlerQueue: screen.queue)
             try await stream.startCapture()
+            let beat = DispatchSource.makeTimerSource(queue: screen.queue)
+            beat.schedule(deadline: .now() + 0.5, repeating: 0.5)
+            beat.setEventHandler { screen.heartbeat() }
+            beat.resume()
+            heartbeats = beat
             DispatchQueue.global().async {
                 stopped.wait()
                 Task {
@@ -198,6 +209,7 @@ func record(to path: String) -> Never {
     dispatchMain()
 }
 
-/// Signal sources live as long as the recording.
+/// Signal sources and the heartbeat timer live as long as the recording.
 var sources: [DispatchSourceSignal] = []
+var heartbeats: DispatchSourceTimer?
 #endif
