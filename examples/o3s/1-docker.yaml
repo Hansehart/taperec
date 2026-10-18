@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=../../schema/taperec.schema.json
+# Part 1: Docker Desktop from the command line, through its first-run window.
+output: o3s-1-docker.mp4
+steps:
+  - set: { moveDuration: 700ms }
+  - sleep: 1s
+  - click: { dock: Terminal }
+  - waitWindow: { title: sh, timeout: 30s }
+  - sleep: 1s
+  - paste: curl -fsSLo /tmp/Docker.dmg https://desktop.docker.com/mac/main/amd64/Docker.dmg
+  - key: return
+  - warp:
+      label: Downloading Docker Desktop
+      length: 2s
+      steps:
+        - waitUntil: { command: test -s /tmp/Docker.dmg && ! pgrep -x curl, timeout: 4m }
+  - paste: >-
+      sudo hdiutil attach /tmp/Docker.dmg &&
+      sudo /Volumes/Docker/Docker.app/Contents/MacOS/install --accept-license --user=$USER &&
+      sudo hdiutil detach /Volumes/Docker
+  - key: return
+  - warp:
+      label: Installing Docker Desktop
+      length: 2s
+      steps:
+        - waitUntil:
+            command: test -x /Applications/Docker.app/Contents/Resources/bin/docker && ! test -d /Volumes/Docker
+            timeout: 4m
+  # The CLI's start can wrongly report a running Docker Desktop right after installing, so open the app.
+  - paste: open /Applications/Docker.app
+  - key: return
+  - warp:
+      label: Starting Docker
+      length: 2s
+      steps:
+        - waitUntil: { command: /Applications/Docker.app/Contents/Resources/bin/docker info, timeout: 5m }
+  # Docker Desktop asks to find devices on the local network.
+  - click: { button: Allow, timeout: 2m }
+  - sleep: 1.5s
+  # Hide its welcome window and carry on in Terminal.
+  - focus: Docker Desktop
+  - key: primary+h
+  - focus: Terminal
+  - sleep: 1s
+  - key: primary+k
+  - paste: "/Applications/Docker.app/Contents/Resources/bin/docker info --format '{{.ServerVersion}}'"
+  - key: return
+  - sleep: 3s

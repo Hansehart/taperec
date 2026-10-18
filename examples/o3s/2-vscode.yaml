@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../../schema/taperec.schema.json
+# Part 2: VS Code, the Dev Containers extension and o3s, with Docker running.
+output: o3s-2-vscode.mp4
+steps:
+  - set: { moveDuration: 700ms }
+  - sleep: 1s
+  - click: { dock: Terminal }
+  - waitWindow: { title: sh, timeout: 30s }
+  - focus: Terminal
+  - sleep: 1s
+  - key: primary+k
+  - paste: brew install --cask visual-studio-code
+  - key: return
+  - warp:
+      label: Installing VS Code
+      length: 2s
+      steps:
+        - waitUntil:
+            command: >-
+              test -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' &&
+              ! pgrep -f brew.rb
+            timeout: 4m
+  - paste: code --install-extension ms-vscode-remote.remote-containers
+  - key: return
+  - warp:
+      label: Installing Dev Containers
+      length: 2s
+      steps:
+        - waitUntil:
+            command: >-
+              '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' --list-extensions |
+              grep -qi remote-containers
+            timeout: 3m
+  - key: primary+k
+  - paste: git clone https://github.com/Hansehart/o3s.git && code o3s
+  - key: return
+  # macOS asks once before opening an app downloaded from the internet.
+  - click: { button: Open, timeout: 2m }
+  - waitWindow: { title: o3s, timeout: 2m }
+  - sleep: 3s

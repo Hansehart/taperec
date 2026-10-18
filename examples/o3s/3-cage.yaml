@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../../schema/taperec.schema.json
+# Part 3: reopen o3s in its cage and show which hosts answer, with Docker, VS Code and o3s ready.
+output: o3s-3-cage.mp4
+steps:
+  - set: { moveDuration: 700ms }
+  - sleep: 1s
+  - waitUntil:
+      command: "'/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' $HOME/o3s"
+      timeout: 1m
+  - waitWindow: { title: o3s, timeout: 2m }
+  - focus: Visual Studio Code
+  - sleep: 3s
+  - key: primary+shift+p
+  - sleep: 800ms
+  - paste: "Dev Containers: Reopen in Container"
+  - sleep: 800ms
+  - key: return
+  - warp:
+      label: Building the cage
+      length: 5s
+      steps:
+        # VS Code is connected once its extension host runs inside the cage.
+        - waitUntil:
+            command: >-
+              /Applications/Docker.app/Contents/Resources/bin/docker exec
+              "$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)"
+              pgrep -f -- --type=extensionHost
+            timeout: 45m
+  - sleep: 2s
+  - key: ctrl+`
+  # The terminal is ready once its shell runs inside the cage.
+  - waitUntil:
+      command: >-
+        /Applications/Docker.app/Contents/Resources/bin/docker exec
+        "$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)"
+        pgrep -f -- '--init-file .*shellIntegration'
+      timeout: 2m
+  - sleep: 1s
+  - paste: curl -sI https://github.com | head -1
+  - key: return
+  - sleep: 2s
+  - paste: curl -sSI --max-time 5 https://example.com
+  - key: return
+  - sleep: 4s

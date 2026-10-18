@@ -109,6 +109,28 @@ fn rule_errors_name_the_step() -> TestResult {
 }
 
 #[test]
+fn example_tapes_are_valid() -> TestResult {
+    let mut tapes = Vec::new();
+    for entry in fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/o3s"))? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "yaml") {
+            tapes.push(
+                path.into_os_string()
+                    .into_string()
+                    .map_err(|p| format!("{p:?}"))?,
+            );
+        }
+    }
+    assert_eq!(tapes.len(), 3, "{tapes:?}");
+    let args: Vec<&str> = ["check"]
+        .into_iter()
+        .chain(tapes.iter().map(String::as_str))
+        .collect();
+    assert_eq!(taperec(&args)?, (Some(0), String::new()));
+    Ok(())
+}
+
+#[test]
 fn check_validates_without_recording() -> TestResult {
     let good = tape("checkgood", "output: a.mp4\nsteps:\n  - sleep: 1s\n")?;
     let bad = tape("checkbad", "output: a.mp4\nsteps:\n  - sleep: 5x\n")?;
