@@ -116,7 +116,8 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
         guard CMTimeCompare(frame.presentationTimeStamp, appended) > 0 else { return }
         appended = frame.presentationTimeStamp
         if !input.append(frame) {
-            write("writing a frame failed: \(String(describing: writer.error))\n", to: .standardError)
+            write("writing the \(describe(frame)) failed: \(String(describing: writer.error))\n",
+                  to: .standardError)
             exit(Exit.failed.rawValue)
         }
     }
@@ -143,6 +144,15 @@ final class ScreenWriter: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
     }
+}
+
+/// A frame's time, size and pixel format, for error messages.
+func describe(_ frame: CMSampleBuffer) -> String {
+    guard let pixels = frame.imageBuffer else { return "frame at \(frame.presentationTimeStamp.seconds) without pixels" }
+    let format = CVPixelBufferGetPixelFormatType(pixels)
+    let code = String((0..<4).map { Character(UnicodeScalar(UInt8((format >> (24 - 8 * $0)) & 0xff))) })
+    return "frame at \(frame.presentationTimeStamp.seconds), \(CVPixelBufferGetWidth(pixels))x"
+        + "\(CVPixelBufferGetHeight(pixels)) \(code)"
 }
 
 extension CMSampleBuffer {
@@ -184,7 +194,10 @@ func record(to path: String) -> Never {
             config.width = display.width
             config.height = display.height
             config.minimumFrameInterval = CMTime(value: 1, timescale: framesPerSecond)
-            config.pixelFormat = kCVPixelFormatType_32BGRA
+            // The encoder's own 4:2:0 input, so no pixel transfer stands between capture and encoding.
+            config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+            config.colorSpaceName = CGColorSpace.sRGB
             config.queueDepth = 8
             config.showsCursor = true
             if #available(macOS 15.0, *) { config.showMouseClicks = true }
