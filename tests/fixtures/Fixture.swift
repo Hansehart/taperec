@@ -39,6 +39,15 @@ final class Fixture: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // Shortcuts are logged by modifiers and key on their way to the menus.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let held: [(NSEvent.ModifierFlags, String)] = [(.control, "ctrl"), (.option, "alt"), (.shift, "shift"),
+                                                             (.command, "cmd")]
+            let names = held.filter { event.modifierFlags.contains($0.0) }.map(\.1)
+            guard names.contains(where: { $0 != "shift" }) else { return event }
+            record("chord \(names.joined(separator: "+")) \(event.charactersIgnoringModifiers ?? "") \(event.keyCode)")
+            return event
+        }
         record("ready")
     }
 

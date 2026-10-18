@@ -99,6 +99,25 @@ for round in 1 2 3 4 5; do
     [ "$(last_logged)" = "entered $line" ] || fail "round $round pasted: $(last_logged)"
 done
 
+echo "chords arrive as the keys they name"
+chord_arrived() { tail -n 1 "$log" | grep -q '^chord '; }
+while IFS='|' read -r keys expected; do
+    "$helper" key "$keys"
+    eventually 5 chord_arrived || fail "$keys never arrived"
+    got=$(last_logged)
+    echo "  $keys: $got"
+    case "$got" in
+        "chord $expected "*) ;;
+        *) fail "$keys arrived as: $got" ;;
+    esac
+    echo next >>"$log"
+done <<'CHORDS'
+ctrl+`|ctrl `
+primary+shift+p|shift+cmd P
+primary+k|cmd k
+ctrl+alt+arrow-left|ctrl+alt
+CHORDS
+
 echo "dock lists Finder"
 dock=$("$helper" dock) || fail "dock failed"
 printf '%s\n' "$dock" | cut -f 1 | grep -qxF Finder || fail "no Finder in: $dock"
