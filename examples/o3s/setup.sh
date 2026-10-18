@@ -43,7 +43,9 @@ for stage in ${stages[@]+"${stages[@]}"}; do
       HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask visual-studio-code
       # Section 2 shows the first-launch prompt; later sections open VS Code without it.
       xattr -dr com.apple.quarantine "/Applications/Visual Studio Code.app"
-      "$code" --install-extension ms-vscode-remote.remote-containers ;;
+      # The Marketplace sometimes serves an unreadable signature; a second install succeeds.
+      "$code" --install-extension ms-vscode-remote.remote-containers ||
+        "$code" --install-extension ms-vscode-remote.remote-containers ;;
     clone)
       git clone --depth 1 https://github.com/Hansehart/o3s.git "$HOME/o3s" ;;
   esac

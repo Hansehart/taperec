@@ -20,7 +20,10 @@ steps:
               test -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' &&
               ! pgrep -f brew.rb
             timeout: 4m
-  - paste: code --install-extension ms-vscode-remote.remote-containers
+  # The Marketplace sometimes serves an unreadable signature, so a failed install is tried once more.
+  - paste: >-
+      code --install-extension ms-vscode-remote.remote-containers ||
+      code --install-extension ms-vscode-remote.remote-containers
   - key: return
   - warp:
       label: Installing Dev Containers
