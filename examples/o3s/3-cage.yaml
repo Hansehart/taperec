@@ -19,12 +19,15 @@ steps:
       label: Building the cage
       length: 5s
       steps:
-        # VS Code is connected once its extension host runs inside the cage.
+        # VS Code takes keys once Dev Containers is done: its lifecycle markers are written, the Docker
+        # feature's extension is installed and the extension host runs inside the cage.
         - waitUntil:
             command: >-
               /Applications/Docker.app/Contents/Resources/bin/docker exec
               "$(/Applications/Docker.app/Contents/Resources/bin/docker ps -q --filter label=com.docker.compose.service=cage)"
-              pgrep -f -- --type=extensionHost
+              sh -c 'ls /home/*/.devcontainer/.postStartCommandMarker
+              /home/*/.vscode-server/extensions/ms-azuretools.vscode-containers-*/package.json &&
+              pgrep -f -- --type=extensionHost' > /dev/null
             timeout: 45m
   - sleep: 2s
   - key: ctrl+`
