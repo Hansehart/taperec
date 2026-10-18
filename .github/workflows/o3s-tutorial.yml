@@ -2,9 +2,6 @@ name: o3s tutorial
 
 # Records the o3s getting-started tutorial from examples/o3s on Intel Macs, which run Docker Desktop.
 on:
-  # Temporary: registers the workflow and records the parts from the pull request.
-  pull_request:
-    paths: [examples/o3s/**, .github/workflows/o3s-tutorial.yml]
   workflow_dispatch:
     inputs:
       run:
@@ -26,11 +23,11 @@ concurrency:
 
 jobs:
   part:
-    if: inputs.run == 'parts' || github.event_name == 'pull_request'
+    if: inputs.run == 'parts'
     strategy:
       fail-fast: false
       matrix:
-        part: ${{ fromJSON(inputs.parts || '["1-docker", "2-vscode", "3-cage"]') }}
+        part: ${{ fromJSON(inputs.parts) }}
     runs-on: macos-26-intel
     timeout-minutes: 90
     env:
