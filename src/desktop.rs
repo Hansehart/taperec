@@ -13,6 +13,8 @@ use crate::tape::{
 
 /// Pointer updates per second while gliding.
 const MOVE_RATE_HZ: u32 = 60;
+/// How long the pointer rests on a target before pressing, so the app has seen it arrive.
+const HOVER: Duration = Duration::from_millis(150);
 /// How often waits on the screen poll.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// The longest a step runs between checks that the recording is alive.
@@ -59,6 +61,7 @@ impl<P: Platform> Desktop<P> {
             Step::MoveTo(target) => self.glide(target, alive)?,
             Step::Click(target) => {
                 self.glide(target, alive)?;
+                self.platform.sleep(HOVER);
                 self.platform.click()?;
             }
             Step::WaitWindow { name, timeout } => self.wait_window(name, *timeout, alive)?,
@@ -145,14 +148,24 @@ impl<P: Platform> Desktop<P> {
         let ticks = self.move_duration.as_millis() * u128::from(MOVE_RATE_HZ) / 1000;
         let steps =
             NonZeroU32::new(u32::try_from(ticks).unwrap_or(u32::MAX)).unwrap_or(NonZeroU32::MIN);
+        let points = motion::path(from, to, steps);
         let start = self.platform.elapsed();
-        for (i, point) in (1..=steps.get()).zip(motion::path(from, to, steps)) {
+        let mut i = 1;
+        loop {
             // Each move is due at a fixed offset from the glide's start.
-            let due = self.move_duration * i / steps.get();
-            self.sleep_until(start, due);
-            self.platform.move_to(point)?;
+            self.sleep_until(start, self.move_duration * i / steps.get());
+            let point = usize::try_from(i - 1).ok().and_then(|n| points.get(n));
+            self.platform.move_to(point.copied().unwrap_or(to))?;
+            if i == steps.get() {
+                return Ok(());
+            }
+            // Points already due are skipped, so slow moves keep the glide's duration.
+            let elapsed = self.platform.elapsed().saturating_sub(start).as_nanos();
+            let due = elapsed * u128::from(steps.get()) / self.move_duration.as_nanos().max(1);
+            i = u32::try_from(due)
+                .unwrap_or(u32::MAX)
+                .clamp(i + 1, steps.get());
         }
-        Ok(())
     }
 
     /// The centre of `item`'s icon, from the Dock's own geometry.
@@ -296,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn clicks_glide_at_sixty_hz_then_click() {
+    fn clicks_glide_at_sixty_hz_then_rest_and_click() {
         let platform = play(
             FakePlatform::default(),
             "  - set: { moveDuration: 500ms }\n  - click: { point: { x: 900, y: 600 } }\n",
@@ -306,7 +319,7 @@ mod tests {
         assert_eq!(moves.len(), 30);
         assert_eq!(moves.last(), Some(&Point { x: 900, y: 600 }));
         assert_eq!(platform.calls.last(), Some(&Call::Click));
-        assert_eq!(platform.now(), Duration::from_millis(500));
+        assert_eq!(platform.now(), Duration::from_millis(500) + HOVER);
     }
 
     #[test]
