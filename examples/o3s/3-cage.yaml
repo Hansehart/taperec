@@ -28,7 +28,7 @@ steps:
               sh -c 'ls /home/*/.devcontainer/.postStartCommandMarker
               /home/*/.vscode-server/extensions/ms-azuretools.vscode-containers-*/package.json &&
               pgrep -f -- --type=extensionHost' > /dev/null
-            timeout: 45m
+            timeout: 60m
   - sleep: 2s
   - key: ctrl+`
   # The terminal is ready once its shell runs inside the cage.

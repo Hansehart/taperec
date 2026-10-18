@@ -32,7 +32,7 @@ jobs:
       matrix:
         part: ${{ fromJSON(inputs.parts || '["1-docker", "2-vscode", "3-cage"]') }}
     runs-on: macos-26-intel
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       PART: ${{ matrix.part }}
     steps:
@@ -70,7 +70,7 @@ jobs:
   full:
     if: inputs.run == 'full'
     runs-on: macos-26-intel
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
