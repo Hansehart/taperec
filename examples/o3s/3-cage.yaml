@@ -30,7 +30,8 @@ steps:
               pgrep -f -- --type=extensionHost' > /dev/null
             timeout: 60m
   - sleep: 2s
-  - key: ctrl+`
+  # A new terminal, whatever the panel shows; toggling would only hide the setup log.
+  - key: ctrl+shift+`
   # The terminal is ready once its shell runs inside the cage.
   - waitUntil:
       command: >-
