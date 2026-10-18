@@ -145,14 +145,24 @@ impl<P: Platform> Desktop<P> {
         let ticks = self.move_duration.as_millis() * u128::from(MOVE_RATE_HZ) / 1000;
         let steps =
             NonZeroU32::new(u32::try_from(ticks).unwrap_or(u32::MAX)).unwrap_or(NonZeroU32::MIN);
+        let points = motion::path(from, to, steps);
         let start = self.platform.elapsed();
-        for (i, point) in (1..=steps.get()).zip(motion::path(from, to, steps)) {
+        let mut i = 1;
+        loop {
             // Each move is due at a fixed offset from the glide's start.
-            let due = self.move_duration * i / steps.get();
-            self.sleep_until(start, due);
-            self.platform.move_to(point)?;
+            self.sleep_until(start, self.move_duration * i / steps.get());
+            let point = usize::try_from(i - 1).ok().and_then(|n| points.get(n));
+            self.platform.move_to(point.copied().unwrap_or(to))?;
+            if i == steps.get() {
+                return Ok(());
+            }
+            // Points already due are skipped, so slow moves keep the glide's duration.
+            let elapsed = self.platform.elapsed().saturating_sub(start).as_nanos();
+            let due = elapsed * u128::from(steps.get()) / self.move_duration.as_nanos().max(1);
+            i = u32::try_from(due)
+                .unwrap_or(u32::MAX)
+                .clamp(i + 1, steps.get());
         }
-        Ok(())
     }
 
     /// The centre of `item`'s icon, from the Dock's own geometry.

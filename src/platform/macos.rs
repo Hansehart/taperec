@@ -444,6 +444,28 @@ mod tests {
     }
 
     #[test]
+    fn slow_moves_skip_points_to_keep_the_glide_on_time() {
+        let fake = Fake {
+            run_cost: Duration::from_millis(100),
+            ..Fake::default()
+        }
+        .reply(POINTER, "0\t0\n");
+        let fake = play(
+            fake,
+            "  - set: { moveDuration: 700ms }\n  - moveTo: { point: { x: 900, y: 600 } }\n",
+        )
+        .unwrap();
+        // The pointer read, the glide, and a move started just before its time running past it.
+        assert!(
+            fake.clock <= Duration::from_millis(1000),
+            "{:?}",
+            fake.clock
+        );
+        assert!(moves(&fake).len() <= 8, "{} moves", moves(&fake).len());
+        assert_eq!(moves(&fake).last(), Some(&"taperec-desktop move 900 600"));
+    }
+
+    #[test]
     fn keystrokes_start_typing_speed_apart() {
         let fake = Fake {
             run_cost: Duration::from_millis(10),
