@@ -119,5 +119,14 @@ jobs:
       # The aborted capture stays readable, with the time of its first frame.
       - name: Read the partial capture
         run: |
+          ls -l taperec/
+          perl -e 'open my $f, "<:raw", $ARGV[0] or die; while (read($f, my $h, 8) == 8) {
+              my ($n, $t) = unpack "Na4", $h; print "$t $n\n"; last if $n < 8; seek $f, $n - 8, 1 }' taperec/fail.raw.mov
           ffprobe -v error -show_entries format=duration:format_tags=com.taperec.start -of default=nw=1 taperec/fail.raw.mov
           ffmpeg -v error -i taperec/fail.raw.mov -f null -
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: action-test-failure-${{ matrix.runner }}
+          path: taperec/
+          if-no-files-found: ignore
