@@ -28,6 +28,10 @@ steps:
               sh -c 'ls /home/*/.devcontainer/.postStartCommandMarker
               /home/*/.vscode-server/extensions/ms-azuretools.vscode-containers-*/package.json &&
               pgrep -f -- --type=extensionHost' > /dev/null
+            # Dev Containers logs this line when building or starting the cage fails.
+            failWhen: >-
+              grep -qs 'Command failed: docker compose'
+              "$HOME/Library/Application Support/Code/logs"/*/window*/exthost/ms-vscode-remote.remote-containers/remoteContainers-*.log
             timeout: 60m
   - sleep: 2s
   # A new terminal, whatever the panel shows; toggling would only hide the setup log.
