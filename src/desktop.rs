@@ -65,7 +65,11 @@ impl<P: Platform> Desktop<P> {
                 self.platform.click()?;
             }
             Step::WaitWindow { name, timeout } => self.wait_window(name, *timeout, alive)?,
-            Step::WaitUntil { command, timeout } => self.wait_until(command, *timeout, alive)?,
+            Step::WaitUntil {
+                command,
+                fail_when,
+                timeout,
+            } => self.wait_until(command, fail_when.as_ref(), *timeout, alive)?,
             Step::Focus { app, timeout } => self.focus(app, *timeout, alive)?,
             // Warps mark the recording; the caller times them.
             Step::Warp { .. } | Step::EndWarp => {}
@@ -223,15 +227,32 @@ impl<P: Platform> Desktop<P> {
         .ok_or_else(|| Error::WindowNotFound(name.as_str().to_owned()))
     }
 
-    /// Polls the shell command until it succeeds.
+    /// Polls the shell command until it succeeds, or until `fail_when` succeeds first.
     fn wait_until(
         &mut self,
         command: &ShellCommand,
+        fail_when: Option<&ShellCommand>,
         timeout: Duration,
         alive: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
         self.poll(UNTIL_POLL_INTERVAL, timeout, alive, |platform, limit| {
-            Ok(platform.shell(command, limit)?.then_some(()))
+            let started = platform.elapsed();
+            if platform.shell(command, limit)? {
+                return Ok(Some(()));
+            }
+            let Some(fail_when) = fail_when else {
+                return Ok(None);
+            };
+            // The failure check shares the attempt's time limit.
+            let spent = platform.elapsed().saturating_sub(started);
+            let left = limit.map(|limit| limit.saturating_sub(spent));
+            if platform.shell(fail_when, left)? {
+                return Err(Error::WaitFailed {
+                    command: command.as_str().to_owned(),
+                    fail_when: fail_when.as_str().to_owned(),
+                });
+            }
+            Ok(None)
         })?
         .ok_or_else(|| Error::ConditionNotMet(command.as_str().to_owned()))
     }
@@ -421,6 +442,65 @@ mod tests {
         let platform = play(platform, "  - waitUntil: { command: test -f x }\n").unwrap();
         assert_eq!(platform.calls.len(), 3);
         assert_eq!(platform.now(), UNTIL_POLL_INTERVAL * 2);
+    }
+
+    #[test]
+    fn a_failure_check_ends_the_wait_at_once() {
+        let platform = FakePlatform {
+            // Ready, failed: no, no; then no, yes.
+            shell: VecDeque::from([false, false, false, true]),
+            ..FakePlatform::default()
+        };
+        let mut desktop = Desktop::new(platform);
+        let tape = "output: t.mp4\nsteps:\n  - waitUntil: { command: test -f ok, failWhen: test -f broken, timeout: 60m }\n";
+        let err = tape::parse(tape)
+            .unwrap()
+            .steps
+            .iter()
+            .try_for_each(|s| desktop.play(s))
+            .err();
+        assert_eq!(
+            err,
+            Some(Error::WaitFailed {
+                command: "test -f ok".into(),
+                fail_when: "test -f broken".into(),
+            })
+        );
+        let platform = desktop.into_platform();
+        assert_eq!(
+            platform.calls,
+            [
+                Call::Shell("test -f ok".into()),
+                Call::Shell("test -f broken".into()),
+                Call::Shell("test -f ok".into()),
+                Call::Shell("test -f broken".into()),
+            ]
+        );
+        assert_eq!(platform.now(), UNTIL_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn success_wins_over_a_failure_check() {
+        let platform = FakePlatform {
+            shell: VecDeque::from([true, true]),
+            ..FakePlatform::default()
+        };
+        let platform = play(
+            platform,
+            "  - waitUntil: { command: test -f ok, failWhen: test -f broken }\n",
+        )
+        .unwrap();
+        assert_eq!(platform.calls, [Call::Shell("test -f ok".into())]);
+    }
+
+    #[test]
+    fn a_failure_check_that_never_passes_leaves_the_timeout() {
+        let err = play(
+            FakePlatform::default(),
+            "  - waitUntil: { command: test -f ok, failWhen: test -f broken, timeout: 2s }\n",
+        )
+        .err();
+        assert_eq!(err, Some(Error::ConditionNotMet("test -f ok".into())));
     }
 
     #[test]
