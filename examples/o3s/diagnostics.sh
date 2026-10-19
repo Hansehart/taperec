@@ -16,4 +16,8 @@ if [ -x "$docker" ]; then
   [ -n "$cage" ] && perl -e 'alarm 30; exec @ARGV' "$docker" exec "$cage" sh -c 'ls -la ~/.vscode-server ~/.vscode-server/bin 2>&1; ps aux' > "$out/cage-inside.txt" 2>&1
 fi
 cp -R "$HOME/Library/Application Support/Code/logs" "$out/vscode-logs" 2>/dev/null
+# What VideoToolbox and its encoder service reported while recording ended.
+log show --last 10m --style compact \
+  --predicate 'subsystem CONTAINS "videotoolbox" OR process == "VTEncoderXPCService" OR process == "taperec-desktop" OR eventMessage CONTAINS "memory pressure"' \
+  > "$out/system-log.txt" 2>&1
 true
