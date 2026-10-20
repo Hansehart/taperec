@@ -185,7 +185,11 @@ impl Recorder for ScreenRecorder {
     fn start(&mut self, out: &Path) -> Result<(), CaptureError> {
         let recording = match self.capture {
             Capture::Ffmpeg => {
-                Recording::start("ffmpeg", &recorder::ffmpeg_args(recorder::FPS, out))?
+                let args = recorder::ffmpeg_args(recorder::FPS, out);
+                let mut recording = Recording::start("ffmpeg", &args)?;
+                // ffmpeg writes the file's header once its first frame is encoded.
+                recording.wait_for_file(out, RECORDING_LIMIT)?;
+                recording
             }
             Capture::ScreenCaptureKit => {
                 let mut recording = Recording::start(HELPER, &record_args(out))?;

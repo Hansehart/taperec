@@ -27,6 +27,8 @@ pub(crate) const MP4: [&str; 2] = ["-movflags", "+faststart"];
 /// The metadata tag holding the clock time of a capture's first frame, in seconds.
 pub const START_TAG: &str = "com.taperec.start";
 
+/// How often a starting recorder's output file is checked.
+const FILE_POLL: Duration = Duration::from_millis(50);
 /// How long the recorder gets to exit after `q` before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
@@ -262,6 +264,32 @@ impl Recording {
             child: Some(child),
             lines,
         })
+    }
+
+    /// Waits up to `limit` for the recorder to put data in `out`, its sign that frames are being written.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Exit`] if the recorder exits first, [`Error::NotReady`] past `limit`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a starting recorder is a real process on the real clock"
+    )]
+    pub fn wait_for_file(&mut self, out: &Path, limit: Duration) -> Result<(), Error> {
+        let deadline = Instant::now() + limit;
+        loop {
+            if fs::metadata(out).is_ok_and(|m| m.len() > 0) {
+                return Ok(());
+            }
+            self.check()?;
+            if Instant::now() >= deadline {
+                return Err(Error::NotReady {
+                    program: self.program.clone(),
+                    limit,
+                });
+            }
+            thread::sleep(FILE_POLL);
+        }
     }
 
     /// Waits up to `limit` for the recorder to print `line`, its sign that frames are being written.
@@ -587,6 +615,44 @@ mod tests {
         let mut recording = Recording::start("sh", &sh("echo starting; exit 3")).unwrap();
         assert_eq!(
             recording.wait_for("recording", Duration::from_secs(5)),
+            Err(Error::Exit {
+                program: "sh".into(),
+                code: Some(3),
+            })
+        );
+    }
+
+    #[test]
+    fn waits_until_the_recorder_writes_its_file() {
+        let path = temp("writes");
+        let _ = fs::remove_file(&path);
+        let script = format!(
+            "sleep 0.2; echo frames > '{}'; cat > /dev/null",
+            path.display()
+        );
+        let mut recording = Recording::start("sh", &sh(&script)).unwrap();
+        assert_eq!(
+            recording.wait_for_file(&path, Duration::from_secs(5)),
+            Ok(())
+        );
+        assert_eq!(recording.stop(), Ok(()));
+    }
+
+    #[test]
+    fn a_recorder_that_writes_nothing_is_not_ready() {
+        let path = temp("silent");
+        let _ = fs::remove_file(&path);
+        let mut recording = Recording::start("sh", &sh("sleep 5")).unwrap();
+        assert_eq!(
+            recording.wait_for_file(&path, Duration::from_millis(100)),
+            Err(Error::NotReady {
+                program: "sh".into(),
+                limit: Duration::from_millis(100),
+            })
+        );
+        let mut recording = Recording::start("sh", &sh("exit 3")).unwrap();
+        assert_eq!(
+            recording.wait_for_file(&path, Duration::from_secs(5)),
             Err(Error::Exit {
                 program: "sh".into(),
                 code: Some(3),
