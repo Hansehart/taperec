@@ -33,6 +33,40 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 /// Recording frame rate.
 pub const FPS: NonZeroU32 = NonZeroU32::MIN.saturating_add(29);
 
+/// The main display as ffmpeg's avfoundation input lists it.
+const SCREEN: &str = "Capture screen 0";
+
+/// ffmpeg arguments that record the screen, cursor and clicks at `fps` into a Matroska `out`.
+///
+/// Frames carry wall-clock times, the clock the timeline marks warps on.
+#[must_use]
+pub fn ffmpeg_args(fps: NonZeroU32, out: &Path) -> Vec<OsString> {
+    let fps = fps.to_string();
+    #[rustfmt::skip]
+    let capture = [
+        // ffmpeg reads `q` once per stats period, here every 50 ms.
+        "-stats_period", "0.05",
+        "-use_wallclock_as_timestamps", "1",
+        "-f", "avfoundation", "-capture_cursor", "1", "-capture_mouse_clicks", "1",
+        "-pixel_format", "bgr0", "-framerate", &fps, "-i", SCREEN,
+    ];
+    // Matroska keeps the wall-clock times whole; written live, one-second clusters reach the disk
+    // as they close, so a killed recorder loses under a second.
+    #[rustfmt::skip]
+    let stream = [
+        "-tune", "zerolatency", "-copyts", "-flush_packets", "1",
+        "-f", "matroska", "-live", "1", "-cluster_time_limit", "1000",
+    ];
+    QUIET
+        .into_iter()
+        .chain(capture)
+        .chain(H264)
+        .chain(stream)
+        .map(OsString::from)
+        .chain([out.as_os_str().to_owned()])
+        .collect()
+}
+
 /// ffmpeg arguments that copy a capture into an MP4 starting at time zero.
 #[must_use]
 pub fn remux_args(capture: &Path, out: &Path) -> Vec<OsString> {
@@ -59,19 +93,21 @@ pub fn encode(program: &str, args: &[OsString], out: &Path) -> Result<(), Error>
     })
 }
 
-/// When the video at `path` starts: the clock time of its first frame, from its [`START_TAG`].
+/// When the video at `path` starts: the clock time of its first frame, from its [`START_TAG`] or else
+/// the container's start time.
 ///
 /// # Errors
 ///
 /// [`Error::Spawn`]/[`Error::Exit`] for a failing prober, [`Error::Probe`] for unexpected output.
 pub fn probe_start(program: &str, path: &Path) -> Result<Duration, Error> {
+    let entries = format!("format=start_time:format_tags={START_TAG}");
     let args = [
         "-v",
         "error",
         "-show_entries",
-        &format!("format_tags={START_TAG}"),
+        &entries,
         "-of",
-        "csv=p=0",
+        "default=noprint_wrappers=1",
     ]
     .map(OsString::from)
     .into_iter()
@@ -79,7 +115,18 @@ pub fn probe_start(program: &str, path: &Path) -> Result<Duration, Error> {
     .collect::<Vec<_>>();
     let output = run(program, &args)?;
     let text = String::from_utf8_lossy(&output.stdout);
-    units::seconds(text.trim(), Finer::Truncate).ok_or_else(|| Error::Probe(text.into_owned()))
+    parse_start(&text).ok_or_else(|| Error::Probe(text.into_owned()))
+}
+
+/// The start in ffprobe's `key=value` lines: the tag `ScreenCaptureKit` captures carry, else `start_time`,
+/// which ffmpeg's captures set to the wall clock.
+fn parse_start(text: &str) -> Option<Duration> {
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+            .and_then(|v| units::seconds(v.trim(), Finer::Truncate))
+    };
+    value(&format!("TAG:{START_TAG}")).or_else(|| value("start_time"))
 }
 
 /// Runs `program args…` to completion with empty stdin, requiring success.
@@ -373,6 +420,24 @@ mod tests {
     }
 
     #[test]
+    fn records_the_macos_screen_as_h264_on_the_wall_clock() {
+        #[rustfmt::skip]
+        let expected = [
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-stats_period", "0.05",
+            "-use_wallclock_as_timestamps", "1",
+            "-f", "avfoundation", "-capture_cursor", "1", "-capture_mouse_clicks", "1",
+            "-pixel_format", "bgr0", "-framerate", "30", "-i", "Capture screen 0",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-tune", "zerolatency", "-copyts", "-flush_packets", "1",
+            "-f", "matroska", "-live", "1", "-cluster_time_limit", "1000",
+            "/out/demo.raw.mkv",
+        ];
+        let args = ffmpeg_args(NonZeroU32::new(30).unwrap(), Path::new("/out/demo.raw.mkv"));
+        assert_eq!(strings(&args), expected);
+    }
+
+    #[test]
     fn remuxes_into_mp4_starting_at_zero() {
         #[rustfmt::skip]
         let expected = [
@@ -471,6 +536,20 @@ mod tests {
     fn encode_reports_missing_program() {
         let err = encode("/nonexistent/ffmpeg", &[], &temp("encode-spawn")).unwrap_err();
         assert!(matches!(err, Error::Spawn { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn the_start_tag_wins_over_the_container_start() {
+        assert_eq!(
+            parse_start("start_time=0.000000\nTAG:com.taperec.start=1792327838.634795\n"),
+            Some(Duration::from_micros(1_792_327_838_634_795))
+        );
+        assert_eq!(
+            parse_start("start_time=1792327838.500000\n"),
+            Some(Duration::from_millis(1_792_327_838_500))
+        );
+        assert_eq!(parse_start("start_time=N/A\n"), None);
+        assert_eq!(parse_start(""), None);
     }
 
     #[test]

@@ -184,7 +184,8 @@ render() {
     local out=$1 tape
     mkdir -p "$out"
     while IFS= read -r tape; do
-        taperec "$tape" --out-dir "$out" --failshot "$(failshot_path "$out" "$tape")"
+        taperec "$tape" --out-dir "$out" --failshot "$(failshot_path "$out" "$tape")" \
+            --recorder "${INPUT_RECORDER:-auto}"
     done <<<"$2"
     {
         echo "videos<<TAPEREC_VIDEOS"

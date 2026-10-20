@@ -4,6 +4,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
+import VideoToolbox
 
 /// The metadata key holding the wall-clock time of the first frame; taperec's `recorder::START_TAG`.
 let startTag = "com.taperec.start"
@@ -153,6 +154,21 @@ func describe(_ frame: CMSampleBuffer) -> String {
     let code = String((0..<4).map { Character(UnicodeScalar(UInt8((format >> (24 - 8 * $0)) & 0xff))) })
     return "frame at \(frame.presentationTimeStamp.seconds), \(CVPixelBufferGetWidth(pixels))x"
         + "\(CVPixelBufferGetHeight(pixels)) \(code)"
+}
+
+/// Whether VideoToolbox encodes 1080p H.264 in hardware here.
+func hardwareEncoder() -> Bool {
+    var session: VTCompressionSession?
+    let status = VTCompressionSessionCreate(
+        allocator: nil, width: 1920, height: 1080, codecType: kCMVideoCodecType_H264,
+        encoderSpecification: nil, imageBufferAttributes: nil, compressedDataAllocator: nil,
+        outputCallback: nil, refcon: nil, compressionSessionOut: &session)
+    guard status == noErr, let session else { return false }
+    defer { VTCompressionSessionInvalidate(session) }
+    var used: CFBoolean?
+    let found = VTSessionCopyProperty(session, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+                                      allocator: nil, valueOut: &used)
+    return found == noErr && used == kCFBooleanTrue
 }
 
 extension CMSampleBuffer {

@@ -189,4 +189,8 @@ impl Recorder for FakeRecorder {
     fn clock(&self) -> Duration {
         self.clock.get()
     }
+
+    fn raw_extension(&self) -> &'static str {
+        "mkv"
+    }
 }

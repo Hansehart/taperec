@@ -31,6 +31,11 @@ func perform(_ command: Command) -> Exit {
     if case let .record(path) = command {
         record(to: path)
     }
+    // Neither the encoder nor screen capture needs Accessibility.
+    if command == .encoder {
+        write(hardwareEncoder() ? "hardware\n" : "software\n", to: .standardOutput)
+        return .ok
+    }
     if command != .pointer, !AXIsProcessTrusted() {
         write("taperec-desktop needs Accessibility access: allow the program that runs it in "
               + "System Settings > Privacy & Security > Accessibility\n", to: .standardError)
@@ -69,7 +74,7 @@ func perform(_ command: Command) -> Exit {
         }
     case let .focus(name):
         write(focusApp(named: name) ? "true\n" : "false\n", to: .standardOutput)
-    case .record:
+    case .record, .encoder:
         break
     }
     usleep(settle)

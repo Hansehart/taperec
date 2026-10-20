@@ -18,6 +18,9 @@ inputs:
   from-source:
     description: Build taperec from the action's source instead of downloading its release.
     default: "false"
+  recorder:
+    description: "How to capture the screen: auto (ScreenCaptureKit with a hardware encoder, else ffmpeg), ffmpeg or screencapturekit."
+    default: auto
 
 outputs:
   videos:
@@ -56,4 +59,5 @@ runs:
         INPUT_OUT_DIR: ${{ inputs.out-dir }}
         INPUT_DOCK: ${{ inputs.dock }}
         INPUT_FROM_SOURCE: ${{ inputs.from-source }}
+        INPUT_RECORDER: ${{ inputs.recorder }}
       run: bash --noprofile --norc "$GITHUB_ACTION_PATH/action/main.sh"

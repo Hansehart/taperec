@@ -25,6 +25,7 @@ jobs:
 | `out-dir` | `taperec` | Directory for the videos and failure screenshots |
 | `dock` | (empty) | Apps the Dock shows, one name per line |
 | `from-source` | `false` | Build taperec from the action's source instead of its release |
+| `recorder` | `auto` | `ffmpeg`, `screencapturekit`, or `auto`: ScreenCaptureKit where the Mac encodes H.264 in hardware (Apple silicon), ffmpeg elsewhere (Intel) |
 
 A tape lists steps; editors with YAML schema support (e.g. VS Code's YAML extension) complete and check them through the schema comment, and `taperec check <tape>...` validates tapes anywhere:
 
@@ -40,7 +41,7 @@ steps:
   - click: { button: Open, timeout: 2m }
 ```
 
-Each recording also leaves its raw material next to the video (`<name>.raw.mov`, `<name>.timeline.yaml` and the warp captions), so `taperec render <name>.timeline.yaml [--out FILE]` rebuilds the video anywhere ffmpeg runs, without recording again.
+Each recording also leaves its raw material next to the video (`<name>.raw.mkv` or `.raw.mov`, `<name>.timeline.yaml` and the warp captions), so `taperec render <name>.timeline.yaml [--out FILE]` rebuilds the video anywhere ffmpeg runs, without recording again.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 

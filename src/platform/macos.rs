@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use super::{CaptureError, Control, Error, Platform, Recorder};
 use crate::process::{Output, Runner};
-use crate::recorder::Recording;
+use crate::recorder::{self, Recording};
 use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 use crate::units;
 
@@ -33,6 +33,23 @@ impl<R: Runner> Helper<R> {
     /// Consumes the platform, returning its runner.
     pub fn into_runner(self) -> R {
         self.runner
+    }
+
+    /// Whether this Mac encodes H.264 in hardware, which makes `ScreenCaptureKit` capture the cheaper one.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the helper cannot answer.
+    pub fn hardware_encoder(&mut self) -> Result<bool, Error> {
+        let output = self.helper(&["encoder"], None)?.stdout;
+        match output.trim() {
+            "hardware" => Ok(true),
+            "software" => Ok(false),
+            _ => Err(Error::UnexpectedOutput {
+                what: "the H.264 encoder",
+                output,
+            }),
+        }
     }
 
     fn helper(&mut self, args: &[&str], limit: Option<Duration>) -> Result<Output, Error> {
@@ -138,18 +155,54 @@ impl<R: Runner> Platform for Helper<R> {
     }
 }
 
-/// The screen captured by the helper through `ScreenCaptureKit`, its frames stamped with wall-clock time.
-#[derive(Default)]
+/// How the screen is captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capture {
+    /// ffmpeg's avfoundation input encoded with libx264: cheapest without a hardware encoder.
+    Ffmpeg,
+    /// `ScreenCaptureKit` encoded by `VideoToolbox` in the helper: cheapest with a hardware encoder.
+    ScreenCaptureKit,
+}
+
+/// The screen captured by `capture`, its frames stamped with wall-clock time.
 pub struct ScreenRecorder {
+    capture: Capture,
     recording: Option<Recording>,
+}
+
+impl ScreenRecorder {
+    /// A recorder that captures with `capture` once started.
+    #[must_use]
+    pub fn new(capture: Capture) -> Self {
+        Self {
+            capture,
+            recording: None,
+        }
+    }
 }
 
 impl Recorder for ScreenRecorder {
     fn start(&mut self, out: &Path) -> Result<(), CaptureError> {
-        let mut recording = Recording::start(HELPER, &record_args(out))?;
-        recording.wait_for(RECORDING, RECORDING_LIMIT)?;
+        let recording = match self.capture {
+            Capture::Ffmpeg => {
+                Recording::start("ffmpeg", &recorder::ffmpeg_args(recorder::FPS, out))?
+            }
+            Capture::ScreenCaptureKit => {
+                let mut recording = Recording::start(HELPER, &record_args(out))?;
+                recording.wait_for(RECORDING, RECORDING_LIMIT)?;
+                recording
+            }
+        };
         self.recording = Some(recording);
         Ok(())
+    }
+
+    fn raw_extension(&self) -> &'static str {
+        match self.capture {
+            // Live Matroska keeps wall-clock times and survives a kill.
+            Capture::Ffmpeg => "mkv",
+            Capture::ScreenCaptureKit => "mov",
+        }
     }
 
     fn check(&mut self) -> Result<(), CaptureError> {
@@ -166,7 +219,7 @@ impl Recorder for ScreenRecorder {
         }
     }
 
-    /// Seconds since the Unix epoch, the clock the helper stamps frames with.
+    /// Seconds since the Unix epoch, the clock both captures stamp frames with.
     fn clock(&self) -> Duration {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -342,6 +395,30 @@ mod tests {
     /// Dock geometry as reported on a macos-26 runner.
     const DOCK_ITEMS: &str = "Finder\t196\t986\t68\t84\nSystem Settings\t1420\t986\t68\t84\n\
                               Terminal\t1488\t986\t68\t84\nmissing value\t1556\t986\t30\t84\n";
+
+    #[test]
+    fn reports_whether_the_encoder_is_hardware() {
+        let mut helper =
+            Helper::new(Fake::default().reply("taperec-desktop encoder", "hardware\n"));
+        assert_eq!(helper.hardware_encoder(), Ok(true));
+        let mut helper =
+            Helper::new(Fake::default().reply("taperec-desktop encoder", "software\n"));
+        assert_eq!(helper.hardware_encoder(), Ok(false));
+        let mut helper = Helper::new(Fake::default().reply("taperec-desktop encoder", "maybe\n"));
+        assert!(matches!(
+            helper.hardware_encoder(),
+            Err(Error::UnexpectedOutput { .. })
+        ));
+    }
+
+    #[test]
+    fn ffmpeg_captures_matroska_and_the_helper_movies() {
+        assert_eq!(ScreenRecorder::new(Capture::Ffmpeg).raw_extension(), "mkv");
+        assert_eq!(
+            ScreenRecorder::new(Capture::ScreenCaptureKit).raw_extension(),
+            "mov"
+        );
+    }
 
     #[test]
     fn records_through_the_helper() {
