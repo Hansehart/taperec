@@ -34,8 +34,6 @@ steps:
       length: 2s
       steps:
         - waitUntil: { command: /Applications/Docker.app/Contents/Resources/bin/docker info, timeout: 5m }
-  # Docker Desktop asks to find devices on the local network.
-  - click: { button: Allow, timeout: 2m }
   - sleep: 1.5s
   # Hide its welcome window and carry on in Terminal.
   - focus: Docker Desktop

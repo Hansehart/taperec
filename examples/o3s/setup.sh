@@ -33,11 +33,7 @@ for stage in ${stages[@]+"${stages[@]}"}; do
       open /Applications/Docker.app
       for _ in $(seq 120); do "$docker" info > /dev/null 2>&1 && break; sleep 5; done
       "$docker" info > /dev/null
-      # Answer the network prompt by its label and hide the welcome window, as section 1 shows.
-      for _ in $(seq 60); do
-        osascript -e 'tell application "System Events" to click button "Allow" of window 1 of process "UserNotificationCenter"' > /dev/null 2>&1 && break
-        sleep 2
-      done
+      # Hide the welcome window, as part 1 shows.
       osascript -e 'tell application "System Events" to set visible of process "Docker Desktop" to false' ;;
     vscode)
       HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask visual-studio-code
