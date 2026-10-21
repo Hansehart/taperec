@@ -20,7 +20,7 @@ jobs:
         env:
           # CI also runs on main itself; the hook guards local commits.
           SKIP: no-commit-to-branch
-        run: pipx run pre-commit==4.6.2 run --all-files --show-diff-on-failure
+        run: pipx run pre-commit==4.7.0 run --all-files --show-diff-on-failure
 
   msrv:
     runs-on: ubuntu-24.04
