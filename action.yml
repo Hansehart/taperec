@@ -18,6 +18,9 @@ inputs:
   from-source:
     description: Build taperec from the action's source instead of downloading its release.
     default: "false"
+  wallpaper:
+    description: "Desktop background: a #rrggbb color or an image path (filled and cropped to 1920x1080); a gradient unless given."
+    default: ""
   recorder:
     description: "How to capture the screen: auto (ScreenCaptureKit with a hardware encoder, else ffmpeg), ffmpeg or screencapturekit."
     default: auto
@@ -60,4 +63,5 @@ runs:
         INPUT_DOCK: ${{ inputs.dock }}
         INPUT_FROM_SOURCE: ${{ inputs.from-source }}
         INPUT_RECORDER: ${{ inputs.recorder }}
+        INPUT_WALLPAPER: ${{ inputs.wallpaper }}
       run: bash --noprofile --norc "$GITHUB_ACTION_PATH/action/main.sh"
