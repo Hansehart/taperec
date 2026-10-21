@@ -69,5 +69,22 @@ launchctl disable gui/$(id -u)/com.apple.iconservices.iconservicesagent" \
 check "failshots drop the tape extension" "/out/intro-failshot.png" "$(failshot_path /out tutorials/intro.yaml)"
 check "failshots keep dots inside the name" "/out/v1.2-failshot.png" "$(failshot_path /out v1.2.yaml)"
 
+check "the default wallpaper is the gradient" \
+    "-f lavfi -i gradients=s=1920x1080:c0=0x1e3c72:c1=0x7f53ac:x0=0:y0=0:x1=1920:y1=1080" \
+    "$(wallpaper_input "" | tr '\n' ' ' | sed 's/ $//')"
+check "a color wallpaper fills the screen" \
+    "-f lavfi -i color=c=0x1e1e2e:s=1920x1080" \
+    "$(wallpaper_input "#1e1e2e" | tr '\n' ' ' | sed 's/ $//')"
+touch "$work/brand.png"
+check "an image wallpaper is scaled to fill and cropped" \
+    "-i $work/brand.png -vf scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080" \
+    "$(wallpaper_input "$work/brand.png" | tr '\n' ' ' | sed 's/ $//')"
+for bad in "#12345" "#12345g"; do
+    check "the wallpaper color $bad is rejected" "::error::the wallpaper color $bad is not #rrggbb" \
+        "$( (wallpaper_input "$bad") 2>&1 || true)"
+done
+check "a missing wallpaper image is rejected" "::error::no wallpaper image at $work/missing.png" \
+    "$( (wallpaper_input "$work/missing.png") 2>&1 || true)"
+
 [ "$failures" -eq 0 ] || { echo "$failures failed"; exit 1; }
 echo "all passed"

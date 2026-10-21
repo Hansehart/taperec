@@ -114,6 +114,7 @@ jobs:
         continue-on-error: true
         with:
           tapes: tests/fail.yaml
+          wallpaper: "#1e1e2e"
           from-source: ${{ github.event_name != 'workflow_dispatch' || inputs.from-source }}
       - name: Verify the failure
         env:
@@ -121,6 +122,16 @@ jobs:
         run: |
           [ "$OUTCOME" = failure ] || { echo "::error::the failing tape ended with $OUTCOME"; exit 1; }
           [ -s taperec/fail-failshot.png ] || { echo "::error::no failshot"; exit 1; }
+      # The chosen wallpaper fills the desktop: one pixel left of centre, below the menu bar.
+      - name: Check the wallpaper
+        run: |
+          read -r r g b < <(ffmpeg -v error -i taperec/fail-failshot.png -vf "crop=1:1:300:600,format=rgb24" -f rawvideo - | od -An -tu1)
+          echo "wallpaper pixel: $r $g $b"
+          near() { [ $(($1 - $2)) -le 12 ] && [ $(($2 - $1)) -le 12 ]; }
+          if ! { near "$r" 30 && near "$g" 30 && near "$b" 46; }; then
+            echo "::error::wallpaper pixel $r $g $b is not #1e1e2e"
+            exit 1
+          fi
       # The aborted capture stays readable, with the time of its first frame.
       - name: Read the partial capture
         run: |

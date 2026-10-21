@@ -138,8 +138,25 @@ wait_for_dock() {
 }
 
 # Sets a 1920x1080 screen, a gradient wallpaper and a Dock holding exactly the given apps.
+# Prints, one per line, the ffmpeg input arguments for a wallpaper: the default gradient, a #rrggbb color or an image.
+wallpaper_input() {
+    local value=$1
+    case $value in
+        "")
+            printf '%s\n' -f lavfi -i "gradients=s=1920x1080:c0=0x1e3c72:c1=0x7f53ac:x0=0:y0=0:x1=1920:y1=1080" ;;
+        \#*)
+            [[ $value =~ ^#[0-9a-fA-F]{6}$ ]] || bail "the wallpaper color $value is not #rrggbb"
+            printf '%s\n' -f lavfi -i "color=c=0x${value#\#}:s=1920x1080" ;;
+        *)
+            [ -f "$value" ] || bail "no wallpaper image at $value"
+            # Any size fills the screen, cropped around its centre.
+            printf '%s\n' -i "$value" -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080" ;;
+    esac
+}
+
 prepare_desktop() {
-    local dock=$1 target=$2 out=$3 id bounds wallpaper app old
+    local dock=$1 target=$2 out=$3 background=$4 id bounds wallpaper app old arg
+    local -a input=()
     if crashing_icon_agent "$target"; then
         icon_agent_off
     fi
@@ -149,9 +166,8 @@ prepare_desktop() {
     [ "$bounds" = "0, 0, 1920, 1080" ] || bail "the screen is $bounds, expected 0, 0, 1920, 1080"
 
     wallpaper="$RUNNER_TEMP/taperec-wallpaper.png"
-    ffmpeg -loglevel error -y -f lavfi \
-        -i "gradients=s=1920x1080:c0=0x1e3c72:c1=0x7f53ac:x0=0:y0=0:x1=1920:y1=1080" \
-        -frames:v 1 "$wallpaper"
+    while IFS= read -r arg; do input+=("$arg"); done < <(wallpaper_input "$background")
+    ffmpeg -loglevel error -y "${input[@]}" -frames:v 1 "$wallpaper"
     osascript -e 'on run argv' \
         -e 'tell application "System Events" to tell every desktop to set picture to POSIX file (item 1 of argv)' \
         -e 'end run' "$wallpaper"
@@ -214,7 +230,8 @@ main() {
     local -a list=()
     while IFS= read -r tape; do list+=("$tape"); done <<<"$tapes"
     taperec check "${list[@]}" || bail "a tape is invalid"
-    prepare_desktop "${INPUT_DOCK:-}" "$target" "${INPUT_OUT_DIR:-taperec}"
+    wallpaper_input "${INPUT_WALLPAPER:-}" > /dev/null || exit 1
+    prepare_desktop "${INPUT_DOCK:-}" "$target" "${INPUT_OUT_DIR:-taperec}" "${INPUT_WALLPAPER:-}"
     render "${INPUT_OUT_DIR:-taperec}" "$tapes"
 }
 

@@ -25,6 +25,7 @@ jobs:
 | `out-dir` | `taperec` | Directory for the videos and failure screenshots |
 | `dock` | (empty) | Apps the Dock shows, one name per line |
 | `from-source` | `false` | Build taperec from the action's source instead of its release |
+| `wallpaper` | gradient | Desktop background: a `#rrggbb` color or an image path, filled and cropped to 1920x1080 |
 | `recorder` | `auto` | `ffmpeg`, `screencapturekit`, or `auto`: ScreenCaptureKit where the Mac encodes H.264 in hardware (Apple silicon), ffmpeg elsewhere (Intel) |
 
 A tape lists steps; editors with YAML schema support (e.g. VS Code's YAML extension) complete and check them through the schema comment, and `taperec check <tape>...` validates tapes anywhere:
