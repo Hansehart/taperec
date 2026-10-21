@@ -41,8 +41,6 @@ steps:
   - click: { button: Open, timeout: 2m }
 ```
 
-[`examples/o3s`](examples/o3s) is a complete tutorial: three tapes install Docker Desktop and VS Code, then show o3s allowing github.com and blocking example.com, recorded by the `o3s tutorial` workflow part by part or in one take.
-
 Each recording also leaves its raw material next to the video (`<name>.raw.mkv` or `.raw.mov`, `<name>.timeline.yaml` and the warp captions), so `taperec render <name>.timeline.yaml [--out FILE]` rebuilds the video anywhere ffmpeg runs, without recording again.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
