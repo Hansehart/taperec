@@ -28,6 +28,14 @@ public func run(_ arguments: [String]) -> Int32 {
 let settle: useconds_t = 20_000
 
 func perform(_ command: Command) -> Exit {
+    if case let .record(path) = command {
+        record(to: path)
+    }
+    // Neither the encoder nor screen capture needs Accessibility.
+    if command == .encoder {
+        write(hardwareEncoder() ? "hardware\n" : "software\n", to: .standardOutput)
+        return .ok
+    }
     if command != .pointer, !AXIsProcessTrusted() {
         write("taperec-desktop needs Accessibility access: allow the program that runs it in "
               + "System Settings > Privacy & Security > Accessibility\n", to: .standardError)
@@ -66,6 +74,8 @@ func perform(_ command: Command) -> Exit {
         }
     case let .focus(name):
         write(focusApp(named: name) ? "true\n" : "false\n", to: .standardOutput)
+    case .record, .encoder:
+        break
     }
     usleep(settle)
     return .ok

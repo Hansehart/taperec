@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// Usage text shown for `--help` and after argument errors.
-pub const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG]
+pub const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG] [--recorder auto|ffmpeg|screencapturekit]
        taperec check <tape.yaml>...
        taperec render <name.timeline.yaml> [--out FILE]
        taperec schema";
@@ -19,6 +19,20 @@ pub struct Args {
     pub out_dir: PathBuf,
     /// Where to save a screenshot of the desktop if a step fails.
     pub failshot: Option<String>,
+    /// How to capture the screen.
+    pub recorder: RecorderChoice,
+}
+
+/// Which recorder captures the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecorderChoice {
+    /// `ScreenCaptureKit` where the Mac encodes H.264 in hardware, ffmpeg elsewhere.
+    #[default]
+    Auto,
+    /// ffmpeg's avfoundation input with libx264.
+    Ffmpeg,
+    /// `ScreenCaptureKit` with `VideoToolbox` in the desktop helper.
+    ScreenCaptureKit,
 }
 
 /// What the command line asked for.
@@ -58,6 +72,8 @@ pub enum UsageError {
     NotUtf8(&'static str),
     /// An option missing its value.
     MissingValue(&'static str),
+    /// A `--recorder` other than `auto`, `ffmpeg` or `screencapturekit`.
+    UnknownRecorder(OsString),
 }
 
 impl fmt::Display for UsageError {
@@ -69,6 +85,11 @@ impl fmt::Display for UsageError {
             Self::UnknownOption(arg) => write!(f, "unknown option {}", arg.to_string_lossy()),
             Self::NotUtf8(option) => write!(f, "{option} needs a UTF-8 path"),
             Self::MissingValue(option) => write!(f, "{option} needs a value"),
+            Self::UnknownRecorder(name) => write!(
+                f,
+                "--recorder takes auto, ffmpeg or screencapturekit, not {}",
+                name.to_string_lossy()
+            ),
         }
     }
 }
@@ -108,6 +129,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
     let mut tape = None;
     let mut out_dir = None;
     let mut failshot = None;
+    let mut recorder = RecorderChoice::Auto;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("-h" | "--help") => return Ok(Invocation::Help),
@@ -123,6 +145,15 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
             Some("--out-dir") => {
                 out_dir = Some(args.next().ok_or(UsageError::MissingValue("--out-dir"))?);
             }
+            Some("--recorder") => {
+                let value = args.next().ok_or(UsageError::MissingValue("--recorder"))?;
+                recorder = match value.to_str() {
+                    Some("auto") => RecorderChoice::Auto,
+                    Some("ffmpeg") => RecorderChoice::Ffmpeg,
+                    Some("screencapturekit") => RecorderChoice::ScreenCaptureKit,
+                    _ => return Err(UsageError::UnknownRecorder(value)),
+                };
+            }
             Some(option) if option.starts_with('-') => return Err(UsageError::UnknownOption(arg)),
             _ if tape.is_some() => return Err(UsageError::ExtraArgument(arg)),
             _ => tape = Some(arg),
@@ -132,6 +163,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
         tape: tape.ok_or(UsageError::MissingTape)?.into(),
         out_dir: out_dir.unwrap_or_else(|| ".".into()).into(),
         failshot,
+        recorder,
     }))
 }
 
@@ -179,7 +211,30 @@ mod tests {
             tape: tape.into(),
             out_dir: out_dir.into(),
             failshot: None,
+            recorder: RecorderChoice::Auto,
         })
+    }
+
+    #[test]
+    fn recorder_is_auto_unless_chosen() {
+        let chosen = |name: &str| match parse_strs(&["demo.yaml", "--recorder", name]) {
+            Ok(Invocation::Record(args)) => Ok(args.recorder),
+            other => Err(other),
+        };
+        assert_eq!(chosen("ffmpeg"), Ok(RecorderChoice::Ffmpeg));
+        assert_eq!(
+            chosen("screencapturekit"),
+            Ok(RecorderChoice::ScreenCaptureKit)
+        );
+        assert_eq!(chosen("auto"), Ok(RecorderChoice::Auto));
+        assert_eq!(
+            parse_strs(&["demo.yaml", "--recorder", "obs"]),
+            Err(UsageError::UnknownRecorder("obs".into()))
+        );
+        assert_eq!(
+            parse_strs(&["demo.yaml", "--recorder"]),
+            Err(UsageError::MissingValue("--recorder"))
+        );
     }
 
     #[test]
@@ -190,6 +245,7 @@ mod tests {
                 tape: "demo.yaml".into(),
                 out_dir: ".".into(),
                 failshot: Some("/out/fail.png".into()),
+                recorder: RecorderChoice::Auto,
             }))
         );
         assert_eq!(

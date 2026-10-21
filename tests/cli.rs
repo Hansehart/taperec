@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG]
+const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG] [--recorder auto|ffmpeg|screencapturekit]
        taperec check <tape.yaml>...
        taperec render <name.timeline.yaml> [--out FILE]
        taperec schema\n";

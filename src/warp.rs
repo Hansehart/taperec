@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn timeline_files_round_trip_through_yaml() {
         let file = TimelineFile {
-            video: "smoke.raw.mkv".into(),
+            video: "smoke.raw.mov".into(),
             warps: vec![WarpEntry {
                 label: "Building the cage".into(),
                 start: epoch(10) + Duration::from_millis(250),
@@ -410,9 +410,9 @@ mod tests {
     #[test]
     fn timeline_files_reject_unknown_fields_and_negative_times() {
         let base =
-            "video: a.raw.mkv\nwarps:\n  - { label: a, start: 1, end: 2, length: 1, caption: a.png";
+            "video: a.raw.mov\nwarps:\n  - { label: a, start: 1, end: 2, length: 1, caption: a.png";
         assert!(serde_saphyr::from_str::<TimelineFile>(&format!("{base}, extra: 1 }}\n")).is_err());
-        let negative = "video: a.raw.mkv\nwarps:\n  - { label: a, start: -1, end: 2, length: 1, caption: a.png }\n";
+        let negative = "video: a.raw.mov\nwarps:\n  - { label: a, start: -1, end: 2, length: 1, caption: a.png }\n";
         assert!(serde_saphyr::from_str::<TimelineFile>(negative).is_err());
     }
 

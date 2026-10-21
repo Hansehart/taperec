@@ -8,8 +8,9 @@ use std::process;
 use std::time::Duration;
 
 use crate::cli::Args;
+use crate::cli::RecorderChoice;
 use crate::desktop::Desktop;
-use crate::platform::macos::{FfmpegScreen, Helper};
+use crate::platform::macos::{Capture, Helper, ScreenRecorder};
 use crate::platform::{Platform, Recorder};
 use crate::process::SystemRunner;
 use crate::recorder::FPS;
@@ -148,17 +149,30 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     let path = args.out_dir.join(tape.output.as_str());
     // The raw capture, timeline and captions stay next to the video, for `taperec render`.
     let stem = tape.output.as_str().trim_end_matches(".mp4");
-    let raw = args.out_dir.join(format!("{stem}.raw.mkv"));
-    let mut desktop = Desktop::new(Helper::new(SystemRunner::default()));
+    let mut helper = Helper::new(SystemRunner::default());
+    // Software H.264 in VideoToolbox costs about three times libx264's CPU.
+    let screencapturekit = match args.recorder {
+        RecorderChoice::Ffmpeg => false,
+        RecorderChoice::ScreenCaptureKit => true,
+        RecorderChoice::Auto => helper.hardware_encoder()?,
+    };
+    let mut recorder = ScreenRecorder::new(if screencapturekit {
+        Capture::ScreenCaptureKit
+    } else {
+        Capture::Ffmpeg
+    });
+    let video = format!("{stem}.raw.{}", recorder.raw_extension());
+    let raw = args.out_dir.join(&video);
+    let mut desktop = Desktop::new(helper);
     let marked = capture(
         &tape,
         &mut desktop,
-        &mut FfmpegScreen::default(),
+        &mut recorder,
         &raw,
         args.failshot.as_deref(),
     )?;
     let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
-    save_timeline(&timeline_path, stem, marked)?;
+    save_timeline(&timeline_path, stem, &video, marked)?;
     render(&timeline_path, &path)?;
     Ok(path)
 }
@@ -202,7 +216,12 @@ pub fn capture<P: Platform, R: Recorder>(
 }
 
 /// Renders each warp's caption next to the capture and writes the timeline file pointing at them.
-fn save_timeline(path: &Path, stem: &str, marked: Vec<warp::Marked>) -> Result<(), AppError> {
+fn save_timeline(
+    path: &Path,
+    stem: &str,
+    video: &str,
+    marked: Vec<warp::Marked>,
+) -> Result<(), AppError> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut warps = Vec::with_capacity(marked.len());
     for (index, mark) in marked.into_iter().enumerate() {
@@ -220,7 +239,7 @@ fn save_timeline(path: &Path, stem: &str, marked: Vec<warp::Marked>) -> Result<(
         });
     }
     let file = warp::TimelineFile {
-        video: format!("{stem}.raw.mkv"),
+        video: video.to_owned(),
         warps,
     };
     let timeline_error = |detail: String| AppError::Timeline {
@@ -282,6 +301,7 @@ mod tests {
             failshot: None,
             tape,
             out_dir: std::env::temp_dir(),
+            recorder: RecorderChoice::Auto,
         }
     }
 
@@ -363,7 +383,7 @@ mod tests {
             let platform = FakePlatform::default();
             let mut recorder = platform.recorder();
             let mut desktop = Desktop::new(platform);
-            let raw = Path::new("/out/t.raw.mkv");
+            let raw = Path::new("/out/t.raw.mov");
             let marked = capture(
                 &tape("  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - sleep: 1s\n"),
                 &mut desktop,
@@ -393,7 +413,7 @@ mod tests {
                 &tape("  - click: { button: Open, timeout: 1s }\n  - sleep: 1s\n"),
                 &mut desktop,
                 &mut recorder,
-                Path::new("/out/t.raw.mkv"),
+                Path::new("/out/t.raw.mov"),
                 Some("/out/t-failshot.png"),
             )
             .unwrap_err();
@@ -420,7 +440,7 @@ mod tests {
                 &tape("  - waitUntil: { command: never, timeout: 10m }\n"),
                 &mut desktop,
                 &mut recorder,
-                Path::new("/out/t.raw.mkv"),
+                Path::new("/out/t.raw.mov"),
                 None,
             )
             .unwrap_err();
@@ -437,7 +457,7 @@ mod tests {
                 &tape("  - paste: echo hi\n  - key: return\n"),
                 &mut desktop,
                 &mut recorder,
-                Path::new("/out/t.raw.mkv"),
+                Path::new("/out/t.raw.mov"),
                 None,
             )
             .unwrap();

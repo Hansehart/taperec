@@ -18,7 +18,10 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(Command(["type", "x"]), .type("x"))
         XCTAssertEqual(Command(["paste", "git clone x"]), .paste("git clone x"))
         XCTAssertEqual(Command(["focus", "Visual Studio Code"]), .focus("Visual Studio Code"))
-        for bad in [[], ["move", "1"], ["move", "-1", "2"], ["type", "ab"], ["focus", ""], ["jump"], ["click", "x"]] {
+        XCTAssertEqual(Command(["record", "/out/demo.raw.mov"]), .record("/out/demo.raw.mov"))
+        XCTAssertEqual(Command(["encoder"]), .encoder)
+        for bad in [[], ["move", "1"], ["move", "-1", "2"], ["type", "ab"], ["focus", ""], ["jump"], ["click", "x"],
+                    ["record"], ["record", ""], ["encoder", "x"]] {
             XCTAssertNil(Command(bad), "\(bad)")
         }
     }

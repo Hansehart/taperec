@@ -133,6 +133,9 @@ pub trait Recorder {
 
     /// Now, on the clock the captured frames carry.
     fn clock(&self) -> Duration;
+
+    /// The file extension of the capture, e.g. `mkv`.
+    fn raw_extension(&self) -> &'static str;
 }
 
 /// Why capture failed.

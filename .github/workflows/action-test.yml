@@ -81,9 +81,16 @@ jobs:
       # The raw capture, timeline and captions rebuild the video without recording again.
       - name: Re-render from the raw material
         run: |
-          ls taperec/smoke.raw.mkv taperec/smoke.timeline.yaml taperec/smoke.warp0.png
+          ls taperec/smoke.raw.* taperec/smoke.timeline.yaml taperec/smoke.warp0.png
           "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --out taperec/rerender.mp4
           tests/verify-video.sh taperec/rerender.mp4
+      # `auto` picks ScreenCaptureKit with a hardware encoder, ffmpeg without one.
+      - name: Show the recorder auto chose
+        run: |
+          echo "H.264 encoder: $("$RUNNER_TEMP/taperec-bin/taperec-desktop" encoder)"
+          ls taperec/smoke.raw.*
+      - name: Record still and changing screens
+        run: tests/record-contract.sh "$RUNNER_TEMP/taperec-bin/taperec-desktop" "$RUNNER_TEMP/record"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -114,3 +121,15 @@ jobs:
         run: |
           [ "$OUTCOME" = failure ] || { echo "::error::the failing tape ended with $OUTCOME"; exit 1; }
           [ -s taperec/fail-failshot.png ] || { echo "::error::no failshot"; exit 1; }
+      # The aborted capture stays readable, with the time of its first frame.
+      - name: Read the partial capture
+        run: |
+          raw=$(ls taperec/fail.raw.*)
+          ffprobe -v error -show_entries format=duration,start_time:format_tags=com.taperec.start -of default=nw=1 "$raw"
+          ffmpeg -v error -i "$raw" -f null -
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: action-test-failure-${{ matrix.runner }}
+          path: taperec/
+          if-no-files-found: ignore
