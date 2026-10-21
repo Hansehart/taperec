@@ -1,4 +1,5 @@
-//! Time warps: stretches of a capture fast-forwarded under a caption.
+//! After effects marked while recording and drawn when rendering: time warps, stretches of a capture
+//! fast-forwarded under a caption, and the bar, text shown along the top of the video.
 
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
@@ -31,11 +32,32 @@ pub struct Marked {
     pub label: String,
 }
 
-/// Collects warps as the tape plays.
+/// A stretch of the capture showing text in the bar, timed on the capture's clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedBar {
+    /// When the text appears.
+    pub start: Duration,
+    /// When it goes.
+    pub end: Duration,
+    /// What the bar shows.
+    pub text: String,
+}
+
+/// The after effects of one recording.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Marks {
+    /// The finished warps, in order.
+    pub warps: Vec<Marked>,
+    /// The bar's texts, in order.
+    pub bars: Vec<MarkedBar>,
+}
+
+/// Collects warps and bar texts as the tape plays.
 #[derive(Debug, Default)]
 pub struct Timeline {
     open: Option<(Duration, Duration, String)>,
-    closed: Vec<Marked>,
+    bar: Option<(Duration, String)>,
+    marks: Marks,
 }
 
 impl Timeline {
@@ -48,7 +70,7 @@ impl Timeline {
             Step::EndWarp => {
                 // The parser guarantees every EndWarp closes an open Warp.
                 if let Some((start, length, label)) = self.open.take() {
-                    self.closed.push(Marked {
+                    self.marks.warps.push(Marked {
                         span: Span {
                             start,
                             end: at,
@@ -58,14 +80,31 @@ impl Timeline {
                     });
                 }
             }
+            Step::Bar(text) => {
+                self.close_bar(at);
+                if !text.is_empty() {
+                    self.bar = Some((at, text.clone()));
+                }
+            }
             _ => {}
         }
     }
 
-    /// The finished warps, in order.
+    /// The marks, with a bar still showing at `end` ending there.
     #[must_use]
-    pub fn into_marked(self) -> Vec<Marked> {
-        self.closed
+    pub fn finish(mut self, end: Duration) -> Marks {
+        self.close_bar(end);
+        self.marks
+    }
+
+    fn close_bar(&mut self, at: Duration) {
+        if let Some((start, text)) = self.bar.take() {
+            self.marks.bars.push(MarkedBar {
+                start,
+                end: at,
+                text,
+            });
+        }
     }
 }
 
@@ -77,6 +116,25 @@ pub struct TimelineFile {
     pub video: String,
     /// The warps, in order.
     pub warps: Vec<WarpEntry>,
+    /// The bar's texts, in order; absent in timelines from before the bar.
+    #[serde(default)]
+    pub bars: Vec<BarEntry>,
+}
+
+/// One stretch of bar text in a timeline file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BarEntry {
+    /// What the bar shows.
+    pub text: String,
+    /// When the text appears, in seconds since the Unix epoch, the clock the capture's frames carry.
+    #[serde(with = "epoch_seconds")]
+    pub start: Duration,
+    /// When it goes, on the same clock.
+    #[serde(with = "epoch_seconds")]
+    pub end: Duration,
+    /// The bar image, relative to the timeline file.
+    pub image: String,
 }
 
 /// One warp of a timeline file.
@@ -132,6 +190,19 @@ pub fn spans(warps: &[WarpEntry], capture_start: Duration) -> Vec<Span> {
         .collect()
 }
 
+/// Where each bar shows within a capture whose first frame carries `capture_start`, as (from, to).
+#[must_use]
+pub fn bar_spans(bars: &[BarEntry], capture_start: Duration) -> Vec<(Duration, Duration)> {
+    bars.iter()
+        .map(|bar| {
+            (
+                bar.start.saturating_sub(capture_start),
+                bar.end.saturating_sub(capture_start),
+            )
+        })
+        .collect()
+}
+
 /// The warps lasting at least `frame` in the capture; shorter ones play as normal footage.
 #[must_use]
 pub fn visible(warps: Vec<WarpEntry>, frame: Duration) -> Vec<WarpEntry> {
@@ -170,12 +241,17 @@ pub fn caption(label: &str, real: Duration) -> String {
     format!("▶▶  {label}  ·  {took}")
 }
 
-/// The `-filter_complex` graph applying `spans` to input `0:v`, captioning warp `k` with input `k + 1`.
+/// The `-filter_complex` graph applying `spans` to input `0:v`, captioning warp `k` with input `k + 1`;
+/// bar `k` shows input `spans.len() + k + 1` along the top during its (from, to), before any warp.
 ///
 /// # Errors
 ///
 /// [`Error::BadSpans`] for overlapping or unordered spans.
-pub fn filter_graph(spans: &[Span], fps: NonZeroU32) -> Result<String, Error> {
+pub fn filter_graph(
+    spans: &[Span],
+    bars: &[(Duration, Duration)],
+    fps: NonZeroU32,
+) -> Result<String, Error> {
     // Segments in output order.
     let mut segments: Vec<Segment> = Vec::new();
     let mut cursor = Duration::ZERO;
@@ -193,7 +269,20 @@ pub fn filter_graph(spans: &[Span], fps: NonZeroU32) -> Result<String, Error> {
 
     let count = segments.len();
     // Writing to a `String` always succeeds.
-    let mut graph = format!("[0:v]split={count}");
+    let mut graph = String::new();
+    let mut source = "0:v".to_owned();
+    // The bar goes into the footage first, so a warp speeds it up with everything else.
+    for (k, (from, to)) in bars.iter().enumerate() {
+        let image = spans.len() + k + 1;
+        let _ = write!(
+            graph,
+            "[{source}][{image}:v]overlay=x=0:y=0:enable='between(t,{},{})'[b{k}];",
+            seconds(*from),
+            seconds(*to)
+        );
+        source = format!("b{k}");
+    }
+    let _ = write!(graph, "[{source}]split={count}");
     for i in 0..count {
         let _ = write!(graph, "[i{i}]");
     }
@@ -256,7 +345,8 @@ fn seconds(duration: Duration) -> String {
     format!("{}.{:03}", millis / 1000, millis % 1000)
 }
 
-/// ffmpeg arguments rendering `capture` and its caption inputs through `graph` into `out`.
+/// ffmpeg arguments rendering `capture` and its image inputs (warp captions, then bars) through `graph` into
+/// `out`.
 #[must_use]
 pub fn render_args(capture: &Path, captions: &[PathBuf], graph: &str, out: &Path) -> Vec<OsString> {
     let inputs = std::iter::once(capture)
@@ -290,7 +380,7 @@ mod tests {
     }
 
     fn graph(spans: &[Span]) -> Result<String, Error> {
-        filter_graph(spans, NonZeroU32::new(30).unwrap())
+        filter_graph(spans, &[], NonZeroU32::new(30).unwrap())
     }
 
     #[test]
@@ -305,7 +395,7 @@ mod tests {
             timeline.mark(step, secs(at));
         }
         assert_eq!(
-            timeline.into_marked(),
+            timeline.finish(secs(700)).warps,
             [Marked {
                 span: Span {
                     start: secs(2),
@@ -398,12 +488,76 @@ mod tests {
                 length: secs(5),
                 caption: "smoke.warp0.png".into(),
             }],
+            bars: vec![BarEntry {
+                text: "Part 1 · Docker".into(),
+                start: epoch(5),
+                end: epoch(2200),
+                image: "smoke.bar0.png".into(),
+            }],
         };
         let yaml = serde_saphyr::to_string(&file).unwrap();
         assert_eq!(
             serde_saphyr::from_str::<TimelineFile>(&yaml).unwrap(),
             file,
             "{yaml}"
+        );
+    }
+
+    #[test]
+    fn timeline_files_from_before_the_bar_still_read() {
+        let old = "video: a.raw.mkv\nwarps: []\n";
+        let file = serde_saphyr::from_str::<TimelineFile>(old).unwrap();
+        assert_eq!(file.bars, []);
+    }
+
+    #[test]
+    fn timeline_times_bar_texts_until_the_next_or_the_end() {
+        let tape = crate::tape::parse(
+            "output: t.mp4\nsteps:\n  - bar: one\n  - sleep: 1s\n  - bar: two\n  - bar: \"\"\n  - bar: three\n",
+        )
+        .unwrap();
+        let mut timeline = Timeline::default();
+        for (step, at) in tape.steps.iter().zip([1, 2, 5, 9, 12]) {
+            timeline.mark(step, secs(at));
+        }
+        let bar = |start, end, text: &str| MarkedBar {
+            start: secs(start),
+            end: secs(end),
+            text: text.into(),
+        };
+        assert_eq!(
+            timeline.finish(secs(20)).bars,
+            [bar(1, 5, "one"), bar(5, 9, "two"), bar(12, 20, "three")]
+        );
+    }
+
+    #[test]
+    fn bars_go_into_the_footage_before_the_warps() {
+        let g = filter_graph(
+            &[span(2, 602, 5)],
+            &[(secs(1), secs(4)), (secs(4), secs(700))],
+            NonZeroU32::new(30).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            g.starts_with(
+                "[0:v][2:v]overlay=x=0:y=0:enable='between(t,1.000,4.000)'[b0];\
+                 [b0][3:v]overlay=x=0:y=0:enable='between(t,4.000,700.000)'[b1];\
+                 [b1]split=3[i0][i1][i2];"
+            ),
+            "{g}"
+        );
+        assert!(g.contains("[w1][1:v]overlay=x=(W-w)/2"), "{g}");
+    }
+
+    #[test]
+    fn bars_alone_need_no_warp() {
+        let g = filter_graph(&[], &[(secs(0), secs(3))], NonZeroU32::new(30).unwrap()).unwrap();
+        assert_eq!(
+            g,
+            "[0:v][1:v]overlay=x=0:y=0:enable='between(t,0.000,3.000)'[b0];\
+             [b0]split=1[i0];[i0]trim=start=0.000,setpts=PTS-STARTPTS[v0];\
+             [v0]concat=n=1:v=1:a=0,fps=30[out]"
         );
     }
 

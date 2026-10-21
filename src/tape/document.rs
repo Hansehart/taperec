@@ -57,6 +57,8 @@ enum DocStep {
     ),
     /// Change the speed of the steps that follow.
     Set(Set),
+    /// Show this text in the bar along the top of the video from here on; `""` hides the bar.
+    Bar(BarText),
     /// Play the nested steps fast-forwarded into `length` under a caption.
     Warp(Warp),
 }
@@ -200,6 +202,33 @@ impl JsonSchema for Name {
     }
 }
 
+/// Text without control characters, possibly empty.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "String")]
+struct BarText(String);
+
+impl TryFrom<String> for BarText {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        if text.chars().any(char::is_control) {
+            Err("must not contain control characters")
+        } else {
+            Ok(Self(text))
+        }
+    }
+}
+
+impl JsonSchema for BarText {
+    fn schema_name() -> Cow<'static, str> {
+        "BarText".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "type": "string" })
+    }
+}
+
 /// Schema of a duration such as `500ms`, `1.5s` or `2m`.
 struct DurationSchema;
 
@@ -321,6 +350,7 @@ fn lower_steps(
             DocStep::MoveTo(target) => out.push(Step::MoveTo(lower_target(target, &path)?)),
             DocStep::Type(text) => out.push(Step::Type(text)),
             DocStep::Paste(text) => out.push(Step::Paste(text)),
+            DocStep::Bar(BarText(text)) => out.push(Step::Bar(text)),
             DocStep::Key(chord) => out.push(Step::Key(chord)),
             DocStep::Focus(Name(app)) => out.push(Step::Focus {
                 app: AppName(app),

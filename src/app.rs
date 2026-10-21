@@ -164,7 +164,7 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     let video = format!("{stem}.raw.{}", recorder.raw_extension());
     let raw = args.out_dir.join(&video);
     let mut desktop = Desktop::new(helper);
-    let marked = capture(
+    let marks = capture(
         &tape,
         &mut desktop,
         &mut recorder,
@@ -172,12 +172,13 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
         args.failshot.as_deref(),
     )?;
     let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
-    save_timeline(&timeline_path, stem, &video, marked)?;
+    save_timeline(&timeline_path, stem, &video, marks)?;
     render(&timeline_path, &path)?;
     Ok(path)
 }
 
-/// Plays `tape` on `desktop` while `recorder` captures it into `raw`, returning the warps on the capture's clock.
+/// Plays `tape` on `desktop` while `recorder` captures it into `raw`, returning the warps and bar texts on the
+/// capture's clock.
 ///
 /// A failing step saves a screenshot to `failshot`, aborts capture and ends the recording.
 ///
@@ -190,7 +191,7 @@ pub fn capture<P: Platform, R: Recorder>(
     recorder: &mut R,
     raw: &Path,
     failshot: Option<&str>,
-) -> Result<Vec<warp::Marked>, AppError> {
+) -> Result<warp::Marks, AppError> {
     recorder.start(raw)?;
     let mut timeline = warp::Timeline::default();
     for step in &tape.steps {
@@ -211,20 +212,17 @@ pub fn capture<P: Platform, R: Recorder>(
             return Err(error);
         }
     }
+    // A bar still showing lasts to the end of the capture.
+    let marks = timeline.finish(recorder.clock());
     recorder.stop()?;
-    Ok(timeline.into_marked())
+    Ok(marks)
 }
 
-/// Renders each warp's caption next to the capture and writes the timeline file pointing at them.
-fn save_timeline(
-    path: &Path,
-    stem: &str,
-    video: &str,
-    marked: Vec<warp::Marked>,
-) -> Result<(), AppError> {
+/// Renders each warp's caption and bar text next to the capture and writes the timeline file pointing at them.
+fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Result<(), AppError> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut warps = Vec::with_capacity(marked.len());
-    for (index, mark) in marked.into_iter().enumerate() {
+    let mut warps = Vec::with_capacity(marks.warps.len());
+    for (index, mark) in marks.warps.into_iter().enumerate() {
         let caption = format!("{stem}.warp{index}.png");
         let text = warp::caption(&mark.label, mark.span.end.saturating_sub(mark.span.start));
         let image = dir.join(&caption);
@@ -238,9 +236,27 @@ fn save_timeline(
             caption,
         });
     }
+    let mut bars = Vec::with_capacity(marks.bars.len());
+    for (index, bar) in marks.bars.into_iter().enumerate() {
+        let image = format!("{stem}.bar{index}.png");
+        let path = dir.join(&image);
+        let args = [
+            OsString::from("--bar"),
+            OsString::from(&bar.text),
+            path.clone().into_os_string(),
+        ];
+        recorder::encode(CAPTION_TOOL, &args, &path).map_err(AppError::Caption)?;
+        bars.push(warp::BarEntry {
+            text: bar.text,
+            start: bar.start,
+            end: bar.end,
+            image,
+        });
+    }
     let file = warp::TimelineFile {
         video: video.to_owned(),
         warps,
+        bars,
     };
     let timeline_error = |detail: String| AppError::Timeline {
         path: path.to_owned(),
@@ -267,7 +283,7 @@ pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
     let capture = dir.join(&file.video);
     // Warps shorter than a frame play as normal footage.
     let warps = warp::visible(file.warps, Duration::from_secs(1) / FPS.get());
-    if warps.is_empty() {
+    if warps.is_empty() && file.bars.is_empty() {
         return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
             .map_err(AppError::Render);
     }
@@ -277,9 +293,15 @@ pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
         recorder::encode("ffmpeg", &recorder::remux_args(&capture, &zeroed), &zeroed)
             .map_err(AppError::Render)?;
         let spans = warp::spans(&warps, start);
-        let captions: Vec<PathBuf> = warps.iter().map(|w| dir.join(&w.caption)).collect();
-        let graph = warp::filter_graph(&spans, FPS).map_err(AppError::Warp)?;
-        let args = warp::render_args(&zeroed, &captions, &graph, out);
+        let bars = warp::bar_spans(&file.bars, start);
+        // Warp captions first, then bar images, as the graph numbers its inputs.
+        let images: Vec<PathBuf> = warps
+            .iter()
+            .map(|w| dir.join(&w.caption))
+            .chain(file.bars.iter().map(|b| dir.join(&b.image)))
+            .collect();
+        let graph = warp::filter_graph(&spans, &bars, FPS).map_err(AppError::Warp)?;
+        let args = warp::render_args(&zeroed, &images, &graph, out);
         recorder::encode("ffmpeg", &args, out).map_err(AppError::Render)
     })();
     remove(&zeroed);
@@ -384,8 +406,8 @@ mod tests {
             let mut recorder = platform.recorder();
             let mut desktop = Desktop::new(platform);
             let raw = Path::new("/out/t.raw.mov");
-            let marked = capture(
-                &tape("  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - sleep: 1s\n"),
+            let marks = capture(
+                &tape("  - bar: Building\n  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - sleep: 1s\n"),
                 &mut desktop,
                 &mut recorder,
                 raw,
@@ -396,12 +418,22 @@ mod tests {
                 recorder.events,
                 [Capture::Started(raw.to_owned()), Capture::Stopped]
             );
+            let marked = &marks.warps;
             assert_eq!(marked.len(), 1);
             assert_eq!(marked[0].label, "Build");
             // The warp opens after the 2 s sleep and closes after its own 10 s.
             assert_eq!(marked[0].span.start, Duration::from_secs(2));
             assert_eq!(marked[0].span.end, Duration::from_secs(12));
             assert_eq!(marked[0].span.length, Duration::from_secs(5));
+            // The bar shows from the start until the capture ends after the last 1 s.
+            assert_eq!(
+                marks.bars,
+                [warp::MarkedBar {
+                    start: Duration::ZERO,
+                    end: Duration::from_secs(13),
+                    text: "Building".into(),
+                }]
+            );
         }
 
         #[test]
@@ -449,7 +481,7 @@ mod tests {
         }
 
         #[test]
-        fn a_tape_without_warps_stops_cleanly_with_no_marks() {
+        fn a_tape_without_warps_or_bars_stops_cleanly_with_no_marks() {
             let platform = FakePlatform::default();
             let mut recorder = platform.recorder();
             let mut desktop = Desktop::new(platform);
@@ -461,7 +493,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            assert_eq!(marked, []);
+            assert_eq!(marked, warp::Marks::default());
             assert_eq!(recorder.events.last(), Some(&Capture::Stopped));
         }
     }

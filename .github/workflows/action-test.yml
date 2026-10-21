@@ -84,6 +84,14 @@ jobs:
           ls taperec/smoke.raw.* taperec/smoke.timeline.yaml taperec/smoke.warp0.png
           "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --out taperec/rerender.mp4
           tests/verify-video.sh taperec/rerender.mp4
+      # The bar darkens the top strip while it shows and is gone once the tape hides it.
+      - name: Check the bar
+        run: |
+          luma() { ffmpeg -v error "$@" -i taperec/smoke.mp4 -frames:v 1 -vf "crop=1:1:600:30,format=gray" -f rawvideo - | od -An -tu1 | tr -d ' '; }
+          shown=$(luma -ss 0.5)
+          hidden=$(luma -sseof -0.5)
+          echo "bar strip luma: $shown while shown, $hidden once hidden"
+          [ "$shown" -lt $((hidden - 40)) ] || { echo "::error::the bar is missing or never hides"; exit 1; }
       # `auto` picks ScreenCaptureKit with a hardware encoder, ffmpeg without one.
       - name: Show the recorder auto chose
         run: |
