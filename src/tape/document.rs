@@ -8,7 +8,8 @@ use serde::{Deserialize, Deserializer};
 
 use super::{
     duration, key_chord, output_file, AppName, ControlLabel, DockItem, KeyChord, OutputFile, Point,
-    ShellCommand, Step, Tape, Target, ValueError, WarpLabel, WindowName, DEFAULT_WAIT, NAMED_KEYS,
+    ShellCommand, Step, Tape, Target, ValueError, WarpLabel, WindowName, ZoomScale, DEFAULT_WAIT,
+    NAMED_KEYS,
 };
 
 /// A tape: the video it records and what happens on screen.
@@ -59,6 +60,8 @@ enum DocStep {
     Set(Set),
     /// Show this text in the bar along the top of the video from here on; `""` hides the bar.
     Bar(BarText),
+    /// Zoom the video onto a target from here on, or back out with `off`.
+    Zoom(DocZoomStep),
     /// Play the nested steps fast-forwarded into `length` under a caption.
     Warp(Warp),
 }
@@ -90,6 +93,101 @@ struct DocTarget {
     #[serde(default, deserialize_with = "de_opt_duration")]
     #[schemars(with = "DurationSchema")]
     timeout: Option<Duration>,
+}
+
+/// A zoom onto a target, or `off` for the full screen.
+#[derive(Debug)]
+enum DocZoomStep {
+    /// Back to the full screen.
+    Off,
+    /// Onto a target.
+    On(DocZoom),
+}
+
+impl<'de> Deserialize<'de> for DocZoomStep {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = DocZoomStep;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("`off` or a target such as `{ button: Open }`")
+            }
+
+            // YAML 1.1 reads an unquoted `off` as `false`.
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                if value {
+                    Err(E::invalid_value(serde::de::Unexpected::Bool(value), &self))
+                } else {
+                    Ok(DocZoomStep::Off)
+                }
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                if value == "off" {
+                    Ok(DocZoomStep::Off)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(value), &self))
+                }
+            }
+
+            // The map goes straight into `DocZoom`, keeping its own checks and messages.
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                DocZoom::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(DocZoomStep::On)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl JsonSchema for DocZoomStep {
+    fn schema_name() -> Cow<'static, str> {
+        "ZoomStep".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let zoom = generator.subschema_for::<DocZoom>();
+        json_schema!({ "oneOf": [{ "const": "off", "description": "Back to the full screen." }, zoom] })
+    }
+}
+
+/// What to zoom onto: exactly one of `point`, `dock` or `button`, and how far.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(transform = without_defaults)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "Zoom")]
+#[schemars(extend("oneOf" = [
+    { "required": ["point"] },
+    { "required": ["dock"] },
+    { "required": ["button"] },
+]))]
+struct DocZoom {
+    /// A screen position in pixels from the top-left corner.
+    #[serde(default)]
+    #[schemars(with = "DocPoint")]
+    point: Option<DocPoint>,
+    /// A Dock icon by its exact name, e.g. `Terminal`.
+    #[serde(default)]
+    #[schemars(with = "Name", extend("x-platforms" = ["macos"]))]
+    dock: Option<Name>,
+    /// A button by its exact label, e.g. `Open`, once it appears.
+    #[serde(default)]
+    #[schemars(with = "Name")]
+    button: Option<Name>,
+    /// How long to wait for the button; only with `button`, 15s unless given.
+    #[serde(default, deserialize_with = "de_opt_duration")]
+    #[schemars(with = "DurationSchema")]
+    timeout: Option<Duration>,
+    /// How far to zoom in, from 1 to 3; 1.5 unless given. Text softens above about 1.5.
+    #[serde(default)]
+    #[schemars(range(min = 1.0, max = 3.0))]
+    scale: Option<f64>,
 }
 
 /// A screen position in pixels from the top-left corner.
@@ -351,6 +449,21 @@ fn lower_steps(
             DocStep::Type(text) => out.push(Step::Type(text)),
             DocStep::Paste(text) => out.push(Step::Paste(text)),
             DocStep::Bar(BarText(text)) => out.push(Step::Bar(text)),
+            DocStep::Zoom(DocZoomStep::Off) => out.push(Step::Zoom(None)),
+            DocStep::Zoom(DocZoomStep::On(zoom)) => {
+                let scale = match zoom.scale {
+                    None => ZoomScale::DEFAULT,
+                    Some(scale) => ZoomScale::from_factor(scale)
+                        .ok_or_else(|| violation("`scale` must be between 1 and 3"))?,
+                };
+                let target = DocTarget {
+                    point: zoom.point,
+                    dock: zoom.dock,
+                    button: zoom.button,
+                    timeout: zoom.timeout,
+                };
+                out.push(Step::Zoom(Some((lower_target(target, &path)?, scale))));
+            }
             DocStep::Key(chord) => out.push(Step::Key(chord)),
             DocStep::Focus(Name(app)) => out.push(Step::Focus {
                 app: AppName(app),

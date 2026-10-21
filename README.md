@@ -39,6 +39,7 @@ steps:
   - paste: git clone https://github.com/Hansehart/o3s.git
   - key: return
   - bar: Cloning o3s                # text along the top of the video until the next bar; "" hides it
+  - zoom: { point: { x: 480, y: 200 } }   # zoom the video in there until the next zoom; `off` zooms out
   - warp: { label: Cloning, length: 2s, steps: [waitUntil: { command: test -d o3s, timeout: 2m }] }
   - click: { button: Open, timeout: 2m }
 ```

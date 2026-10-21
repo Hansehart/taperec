@@ -19,6 +19,7 @@ steps:
   - waitUntil:
       command: grep -qx 'the quick brown fox jumps over 0123456789 lazy dogs' /tmp/taperec-typed
       timeout: 10s
+  - zoom: { point: { x: 480, y: 200 } }
   - type: echo taperec smoke
   - key: return
   - warp:
@@ -26,6 +27,7 @@ steps:
       length: 1s
       steps:
         - waitUntil: { command: sleep 3, timeout: 30s }
+  - zoom: off
   - key: primary+k
   - bar: ""
   - type: echo done

@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::recorder::{H264, MP4, QUIET};
-use crate::tape::Step;
+use crate::tape::{Point, Step};
 
 /// One warped stretch of the capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,24 @@ pub struct MarkedBar {
     pub text: String,
 }
 
+/// A change of view: from `at` on, the video zooms by `percent` around (`x`, `y`); 100 is the full screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkedZoom {
+    /// When the view starts to change, on the capture's clock.
+    pub at: Duration,
+    /// The centre of the view, in screen pixels.
+    pub x: u32,
+    /// The centre of the view, in screen pixels.
+    pub y: u32,
+    /// How far the view zooms in, in percent.
+    pub percent: u16,
+}
+
+/// The size of the screen taperec records, in pixels.
+const SCREEN: (u32, u32) = (1920, 1080);
+/// How long the view takes to ease from one zoom to the next.
+const ZOOM_EASE: Duration = Duration::from_millis(400);
+
 /// The after effects of one recording.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Marks {
@@ -50,6 +68,8 @@ pub struct Marks {
     pub warps: Vec<Marked>,
     /// The bar's texts, in order.
     pub bars: Vec<MarkedBar>,
+    /// The changes of view, in order.
+    pub zooms: Vec<MarkedZoom>,
 }
 
 /// Collects warps and bar texts as the tape plays.
@@ -90,6 +110,23 @@ impl Timeline {
         }
     }
 
+    /// Zooms by `percent` onto `centre` from `at` on, or back to the full screen for `None`.
+    pub fn zoom(&mut self, view: Option<(Point, u16)>, at: Duration) {
+        let (centre, percent) = view.unwrap_or((
+            Point {
+                x: SCREEN.0 / 2,
+                y: SCREEN.1 / 2,
+            },
+            100,
+        ));
+        self.marks.zooms.push(MarkedZoom {
+            at,
+            x: centre.x,
+            y: centre.y,
+            percent,
+        });
+    }
+
     /// The marks, with a bar still showing at `end` ending there.
     #[must_use]
     pub fn finish(mut self, end: Duration) -> Marks {
@@ -119,6 +156,24 @@ pub struct TimelineFile {
     /// The bar's texts, in order; absent in timelines from before the bar.
     #[serde(default)]
     pub bars: Vec<BarEntry>,
+    /// The changes of view, in order; absent in timelines from before zoom.
+    #[serde(default)]
+    pub zooms: Vec<ZoomEntry>,
+}
+
+/// One change of view in a timeline file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoomEntry {
+    /// When the view starts to change, in seconds since the Unix epoch, the clock the capture's frames carry.
+    #[serde(with = "epoch_seconds")]
+    pub at: Duration,
+    /// The centre of the view, in screen pixels.
+    pub x: u32,
+    /// The centre of the view, in screen pixels.
+    pub y: u32,
+    /// How far the view zooms in, in percent; 100 is the full screen.
+    pub percent: u16,
 }
 
 /// One stretch of bar text in a timeline file.
@@ -203,6 +258,58 @@ pub fn bar_spans(bars: &[BarEntry], capture_start: Duration) -> Vec<(Duration, D
         .collect()
 }
 
+/// The changes of view within a capture whose first frame carries `capture_start`.
+#[must_use]
+pub fn zoom_views(zooms: &[ZoomEntry], capture_start: Duration) -> Vec<MarkedZoom> {
+    zooms
+        .iter()
+        .map(|zoom| MarkedZoom {
+            at: zoom.at.saturating_sub(capture_start),
+            x: zoom.x,
+            y: zoom.y,
+            percent: zoom.percent,
+        })
+        .collect()
+}
+
+/// A chain making the footage constant-rate, then zooming it through `views`, each eased in over 0.4 s;
+/// the view never leaves the screen.
+#[must_use]
+pub fn zoom_chain(views: &[MarkedZoom], fps: NonZeroU32) -> String {
+    // Each change adds its difference from the view before, eased in from its start.
+    let (mut z, mut cx, mut cy) = (
+        "1".to_owned(),
+        (SCREEN.0 / 2).to_string(),
+        (SCREEN.1 / 2).to_string(),
+    );
+    let mut before = (i64::from(SCREEN.0 / 2), i64::from(SCREEN.1 / 2), 100_i64);
+    for view in views {
+        let u = format!("clip((it-{})/{},0,1)", seconds(view.at), seconds(ZOOM_EASE));
+        let eased = format!("{u}*{u}*(3-2*{u})");
+        let now = (
+            i64::from(view.x),
+            i64::from(view.y),
+            i64::from(view.percent),
+        );
+        let _ = write!(z, "+({})*{eased}", hundredths(now.2 - before.2));
+        let _ = write!(cx, "+({})*{eased}", now.0 - before.0);
+        let _ = write!(cy, "+({})*{eased}", now.1 - before.1);
+        before = now;
+    }
+    // zoompan stamps its frames by count, so it needs one input frame per output frame.
+    format!(
+        "fps={fps},zoompan=z='{z}':x='clip({cx}-iw/zoom/2,0,iw-iw/zoom)':y='clip({cy}-ih/zoom/2,0,ih-ih/zoom)':d=1:s={}x{}:fps={fps}",
+        SCREEN.0, SCREEN.1
+    )
+}
+
+/// A difference in percent as a factor with two decimals, e.g. `50` as `0.50` and `-50` as `-0.50`.
+fn hundredths(percent: i64) -> String {
+    let sign = if percent < 0 { "-" } else { "" };
+    let percent = percent.unsigned_abs();
+    format!("{sign}{}.{:02}", percent / 100, percent % 100)
+}
+
 /// The warps lasting at least `frame` in the capture; shorter ones play as normal footage.
 #[must_use]
 pub fn visible(warps: Vec<WarpEntry>, frame: Duration) -> Vec<WarpEntry> {
@@ -242,7 +349,8 @@ pub fn caption(label: &str, real: Duration) -> String {
 }
 
 /// The `-filter_complex` graph applying `spans` to input `0:v`, captioning warp `k` with input `k + 1`;
-/// bar `k` shows input `spans.len() + k + 1` along the top during its (from, to), before any warp.
+/// bar `k` shows input `spans.len() + k + 1` along the top during its (from, to). Zooms apply first, then
+/// bars, then warps.
 ///
 /// # Errors
 ///
@@ -250,6 +358,7 @@ pub fn caption(label: &str, real: Duration) -> String {
 pub fn filter_graph(
     spans: &[Span],
     bars: &[(Duration, Duration)],
+    zooms: &[MarkedZoom],
     fps: NonZeroU32,
 ) -> Result<String, Error> {
     // Segments in output order.
@@ -271,6 +380,11 @@ pub fn filter_graph(
     // Writing to a `String` always succeeds.
     let mut graph = String::new();
     let mut source = "0:v".to_owned();
+    // Zoom first, so the bar on top stays still and full width.
+    if !zooms.is_empty() {
+        let _ = write!(graph, "[0:v]{}[z];", zoom_chain(zooms, fps));
+        "z".clone_into(&mut source);
+    }
     // The bar goes into the footage first, so a warp speeds it up with everything else.
     for (k, (from, to)) in bars.iter().enumerate() {
         let image = spans.len() + k + 1;
@@ -380,7 +494,7 @@ mod tests {
     }
 
     fn graph(spans: &[Span]) -> Result<String, Error> {
-        filter_graph(spans, &[], NonZeroU32::new(30).unwrap())
+        filter_graph(spans, &[], &[], NonZeroU32::new(30).unwrap())
     }
 
     #[test]
@@ -494,6 +608,12 @@ mod tests {
                 end: epoch(2200),
                 image: "smoke.bar0.png".into(),
             }],
+            zooms: vec![ZoomEntry {
+                at: epoch(30),
+                x: 400,
+                y: 300,
+                percent: 150,
+            }],
         };
         let yaml = serde_saphyr::to_string(&file).unwrap();
         assert_eq!(
@@ -536,6 +656,7 @@ mod tests {
         let g = filter_graph(
             &[span(2, 602, 5)],
             &[(secs(1), secs(4)), (secs(4), secs(700))],
+            &[],
             NonZeroU32::new(30).unwrap(),
         )
         .unwrap();
@@ -550,9 +671,79 @@ mod tests {
         assert!(g.contains("[w1][1:v]overlay=x=(W-w)/2"), "{g}");
     }
 
+    fn view(at: u64, x: u32, y: u32, percent: u16) -> MarkedZoom {
+        MarkedZoom {
+            at: secs(at),
+            x,
+            y,
+            percent,
+        }
+    }
+
+    #[test]
+    fn a_zoom_eases_in_around_its_centre_and_stays_on_screen() {
+        let ease = "clip((it-2.000)/0.400,0,1)*clip((it-2.000)/0.400,0,1)*(3-2*clip((it-2.000)/0.400,0,1))";
+        assert_eq!(
+            zoom_chain(&[view(2, 400, 300, 150)], NonZeroU32::new(30).unwrap()),
+            format!(
+                "fps=30,zoompan=z='1+(0.50)*{ease}':\
+                 x='clip(960+(-560)*{ease}-iw/zoom/2,0,iw-iw/zoom)':\
+                 y='clip(540+(-240)*{ease}-ih/zoom/2,0,ih-ih/zoom)':\
+                 d=1:s=1920x1080:fps=30"
+            )
+        );
+    }
+
+    #[test]
+    fn each_change_of_view_adds_its_difference_from_the_one_before() {
+        let chain = zoom_chain(
+            &[
+                view(2, 400, 300, 150),
+                view(5, 1000, 300, 200),
+                view(9, 960, 540, 100),
+            ],
+            NonZeroU32::new(30).unwrap(),
+        );
+        // In 1.5×, across to 2× and back out to the full screen.
+        assert!(chain.contains("z='1+(0.50)*"), "{chain}");
+        assert!(chain.contains("+(0.50)*clip((it-5.000)"), "{chain}");
+        assert!(chain.contains("+(-1.00)*clip((it-9.000)"), "{chain}");
+        assert!(chain.contains("+(600)*clip((it-5.000)"), "{chain}");
+        assert!(chain.contains("+(-40)*clip((it-9.000)"), "{chain}");
+    }
+
+    #[test]
+    fn zoom_goes_first_then_bars_then_warps() {
+        let g = filter_graph(
+            &[span(2, 602, 5)],
+            &[(secs(1), secs(4))],
+            &[view(1, 960, 540, 150)],
+            NonZeroU32::new(30).unwrap(),
+        )
+        .unwrap();
+        assert!(g.starts_with("[0:v]fps=30,zoompan="), "{g}");
+        assert!(g.contains("[z][2:v]overlay=x=0:y=0:enable="), "{g}");
+        assert!(g.contains("[b0]split=3[i0][i1][i2];"), "{g}");
+    }
+
+    #[test]
+    fn timeline_files_from_before_zoom_still_read() {
+        let old = "video: a.raw.mkv\nwarps: []\nbars: []\n";
+        assert_eq!(
+            serde_saphyr::from_str::<TimelineFile>(old).unwrap().zooms,
+            []
+        );
+    }
+
     #[test]
     fn bars_alone_need_no_warp() {
-        let g = filter_graph(&[], &[(secs(0), secs(3))], NonZeroU32::new(30).unwrap()).unwrap();
+        let g = filter_graph(
+            &[],
+            &[(secs(0), secs(3))],
+            &[],
+            NonZeroU32::new(30).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             g,
             "[0:v][1:v]overlay=x=0:y=0:enable='between(t,0.000,3.000)'[b0];\
