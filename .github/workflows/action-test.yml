@@ -91,7 +91,8 @@ jobs:
           shown=$(luma -ss 0.5)
           hidden=$(luma -sseof -0.5)
           echo "bar strip luma: $shown while shown, $hidden once hidden"
-          [ "$shown" -lt $((hidden - 40)) ] || { echo "::error::the bar is missing or never hides"; exit 1; }
+          # The strip is 60 % black, so it keeps at most 40 % of what lies beneath; 60 % leaves room for encoding.
+          [ $((shown * 10)) -lt $((hidden * 6)) ] || { echo "::error::the bar is missing or never hides"; exit 1; }
       # `auto` picks ScreenCaptureKit with a hardware encoder, ffmpeg without one.
       - name: Show the recorder auto chose
         run: |
