@@ -215,6 +215,30 @@ pub enum Target {
     },
 }
 
+/// How far the video zooms in, in percent of the screen: 150 is 1.5×.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoomScale(u16);
+
+impl ZoomScale {
+    /// 1.5×: closer, with text still sharp in a 1920×1080 capture.
+    pub const DEFAULT: Self = Self(150);
+
+    /// The scale for a factor from 1 to 3, e.g. `1.5`.
+    #[must_use]
+    pub fn from_factor(factor: f64) -> Option<Self> {
+        // The nearest whole percentage from 100 to 300, if the factor lies in range.
+        (100..=300_u16)
+            .find(|percent| (f64::from(*percent) - factor * 100.0).abs() <= 0.5)
+            .map(Self)
+    }
+
+    /// The scale in percent.
+    #[must_use]
+    pub fn percent(self) -> u16 {
+        self.0
+    }
+}
+
 /// One action of a tutorial, run in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
@@ -266,6 +290,8 @@ pub enum Step {
     Paste(String),
     /// Show text in the video's bar from here on; empty hides the bar.
     Bar(String),
+    /// Zoom the video onto a target from here on, or back to the full screen with `None`.
+    Zoom(Option<(Target, ZoomScale)>),
     /// Press a key chord.
     Key(KeyChord),
 }
@@ -717,6 +743,34 @@ steps:
         );
         let err = error("  - bar: \"one\\ntwo\"\n");
         assert!(err.message.contains("control characters"), "{err}");
+    }
+
+    #[test]
+    fn zoom_onto_a_target_or_off() {
+        assert_eq!(
+            steps("  - zoom: { point: { x: 400, y: 300 } }\n  - zoom: { button: Open, scale: 2 }\n  - zoom: off\n"),
+            vec![
+                Step::Zoom(Some((Target::Point(Point { x: 400, y: 300 }), ZoomScale::DEFAULT))),
+                Step::Zoom(Some((
+                    Target::Control {
+                        label: ControlLabel("Open".into()),
+                        timeout: DEFAULT_WAIT,
+                    },
+                    ZoomScale(200),
+                ))),
+                Step::Zoom(None),
+            ]
+        );
+        for bad in [
+            "  - zoom: { point: { x: 1, y: 1 }, scale: 4 }\n",
+            "  - zoom: on\n",
+            "  - zoom: {}\n",
+        ] {
+            assert!(
+                parse(&format!("output: t.mp4\nsteps:\n{bad}")).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
