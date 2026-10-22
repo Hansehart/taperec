@@ -1,0 +1,57 @@
+name: linux probe
+
+# Throwaway: what a Linux platform for taperec can rely on, on GitHub's Ubuntu runners.
+on:
+  push:
+    branches: [probe/linux]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        mode: [keys, controls, capture]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Desktop
+        run: probe/linux.sh desktop out
+      - name: ${{ matrix.mode }}
+        env:
+          MODE: ${{ matrix.mode }}
+        run: probe/linux.sh "$MODE" out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: linux-${{ matrix.mode }}-${{ matrix.runner }}
+          path: out/
+  docker:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: Hansehart/o3s
+          path: o3s
+          persist-credentials: false
+      - name: Cage
+        run: probe/linux.sh docker out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: linux-docker-${{ matrix.runner }}
+          path: out/
