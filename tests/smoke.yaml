@@ -3,6 +3,7 @@
 output: smoke.mp4
 steps:
   - set: { moveDuration: 600ms, typingSpeed: 40ms }
+  - bar: taperec smoke test
   - sleep: 1s
   - click: { dock: Terminal }
   - waitWindow: { title: sh, timeout: 30s }
@@ -26,6 +27,7 @@ steps:
       steps:
         - waitUntil: { command: sleep 3, timeout: 30s }
   - key: primary+k
+  - bar: ""
   - type: echo done
   - key: return
   - sleep: 1s

@@ -264,6 +264,8 @@ pub enum Step {
     Type(String),
     /// Put text on the clipboard and paste it with a single keystroke.
     Paste(String),
+    /// Show text in the video's bar from here on; empty hides the bar.
+    Bar(String),
     /// Press a key chord.
     Key(KeyChord),
 }
@@ -702,6 +704,19 @@ steps:
         );
         let err = error("  - waitUntil: { command: x, fail_when: y }\n");
         assert!(err.message.contains("unknown field"), "{err}");
+    }
+
+    #[test]
+    fn bar_sets_or_clears_its_text() {
+        assert_eq!(
+            steps("  - bar: Part 1 · Docker\n  - bar: \"\"\n"),
+            vec![
+                Step::Bar("Part 1 · Docker".into()),
+                Step::Bar(String::new())
+            ]
+        );
+        let err = error("  - bar: \"one\\ntwo\"\n");
+        assert!(err.message.contains("control characters"), "{err}");
     }
 
     #[test]

@@ -22,6 +22,9 @@
     "steps"
   ],
   "$defs": {
+    "BarText": {
+      "type": "string"
+    },
     "Duration": {
       "description": "A duration: whole milliseconds like `500ms`, or seconds or minutes like `1.5s` or `2m`.",
       "type": "string",
@@ -285,6 +288,19 @@
           "additionalProperties": false,
           "required": [
             "set"
+          ]
+        },
+        {
+          "description": "Show this text in the bar along the top of the video from here on; `\"\"` hides the bar.",
+          "type": "object",
+          "properties": {
+            "bar": {
+              "$ref": "#/$defs/BarText"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "bar"
           ]
         },
         {
