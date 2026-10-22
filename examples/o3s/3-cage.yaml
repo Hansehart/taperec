@@ -3,6 +3,7 @@
 output: o3s-3-cage.mp4
 steps:
   - set: { moveDuration: 700ms }
+  - bar: "3/3 · Reopen o3s in its cage"
   - sleep: 1s
   # Dev Containers gives up on the cage when Docker does not answer at once.
   - waitUntil: { command: /Applications/Docker.app/Contents/Resources/bin/docker info, timeout: 5m }
@@ -46,9 +47,14 @@ steps:
         pgrep -f -- '--init-file .*shellIntegration'
       timeout: 2m
   - sleep: 1s
+  # The answers are the point of the tutorial: close in on the terminal.
+  - zoom: { point: { x: 850, y: 750 }, scale: 1.75 }
+  - bar: "Only allowlisted hosts answer from inside the cage"
   - paste: curl -sI https://github.com | head -1
   - key: return
   - sleep: 2s
   - paste: curl -sSI --max-time 5 https://example.com
   - key: return
-  - sleep: 4s
+  - sleep: 2s
+  - bar: "github.com is allowed · example.com is blocked"
+  - sleep: 3s
