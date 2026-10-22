@@ -54,6 +54,8 @@ jobs:
           tapes: examples/o3s/${{ matrix.part }}.yaml
           dock: Terminal
           from-source: "true"
+          # The o3s cube (o3s .github/assets/logo.png) centred on navy.
+          wallpaper: examples/o3s/wallpaper.png
       - name: Diagnostics
         if: failure()
         run: examples/o3s/diagnostics.sh taperec/diagnostics
@@ -82,6 +84,8 @@ jobs:
           tapes: examples/o3s/*.yaml
           dock: Terminal
           from-source: "true"
+          # The o3s cube (o3s .github/assets/logo.png) centred on navy.
+          wallpaper: examples/o3s/wallpaper.png
       # The parts render alike, so their streams join without re-encoding.
       - name: Join the parts
         run: |
