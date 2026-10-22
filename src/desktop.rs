@@ -71,8 +71,8 @@ impl<P: Platform> Desktop<P> {
                 timeout,
             } => self.wait_until(command, fail_when.as_ref(), *timeout, alive)?,
             Step::Focus { app, timeout } => self.focus(app, *timeout, alive)?,
-            // Warps and bars mark the recording; the caller times them.
-            Step::Warp { .. } | Step::EndWarp | Step::Bar(_) => {}
+            // Warps, bars and zooms mark the recording; the caller times them.
+            Step::Warp { .. } | Step::EndWarp | Step::Bar(_) | Step::Zoom(_) => {}
             Step::Type(text) => self.type_text(text)?,
             Step::Paste(text) => self.platform.paste(text)?,
             Step::Key(chord) => self.press(chord)?,
@@ -143,11 +143,7 @@ impl<P: Platform> Desktop<P> {
 
     /// Moves the pointer to `target` along an eased path at [`MOVE_RATE_HZ`].
     fn glide(&mut self, target: &Target, alive: &mut dyn FnMut() -> bool) -> Result<(), Error> {
-        let to = match target {
-            Target::Point(point) => *point,
-            Target::Dock(item) => self.dock_point(item)?,
-            Target::Control { label, timeout } => self.control_point(label, *timeout, alive)?,
-        };
+        let to = self.locate(target, alive)?;
         let from = self.platform.pointer()?;
         let ticks = self.move_duration.as_millis() * u128::from(MOVE_RATE_HZ) / 1000;
         let steps =
@@ -169,6 +165,23 @@ impl<P: Platform> Desktop<P> {
             i = u32::try_from(due)
                 .unwrap_or(u32::MAX)
                 .clamp(i + 1, steps.get());
+        }
+    }
+
+    /// Where `target` is on screen, waiting for a button to appear.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotInDock`], [`Error::ControlNotFound`] or a failed query.
+    pub fn locate(
+        &mut self,
+        target: &Target,
+        alive: &mut dyn FnMut() -> bool,
+    ) -> Result<Point, Error> {
+        match target {
+            Target::Point(point) => Ok(*point),
+            Target::Dock(item) => self.dock_point(item),
+            Target::Control { label, timeout } => self.control_point(label, *timeout, alive),
         }
     }
 

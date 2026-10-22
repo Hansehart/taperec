@@ -304,6 +304,19 @@
           ]
         },
         {
+          "description": "Zoom the video onto a target from here on, or back out with `off`.",
+          "type": "object",
+          "properties": {
+            "zoom": {
+              "$ref": "#/$defs/ZoomStep"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "zoom"
+          ]
+        },
+        {
           "description": "Play the nested steps fast-forwarded into `length` under a caption.",
           "type": "object",
           "properties": {
@@ -426,6 +439,70 @@
         "label",
         "length",
         "steps"
+      ]
+    },
+    "Zoom": {
+      "description": "What to zoom onto: exactly one of `point`, `dock` or `button`, and how far.",
+      "type": "object",
+      "properties": {
+        "button": {
+          "description": "A button by its exact label, e.g. `Open`, once it appears.",
+          "$ref": "#/$defs/Name"
+        },
+        "dock": {
+          "description": "A Dock icon by its exact name, e.g. `Terminal`.",
+          "$ref": "#/$defs/Name",
+          "x-platforms": [
+            "macos"
+          ]
+        },
+        "point": {
+          "description": "A screen position in pixels from the top-left corner.",
+          "$ref": "#/$defs/Point"
+        },
+        "scale": {
+          "description": "How far to zoom in, from 1 to 3; 1.5 unless given. Text softens above about 1.5.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 3.0,
+          "minimum": 1.0
+        },
+        "timeout": {
+          "description": "How long to wait for the button; only with `button`, 15s unless given.",
+          "$ref": "#/$defs/Duration"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "point"
+          ]
+        },
+        {
+          "required": [
+            "dock"
+          ]
+        },
+        {
+          "required": [
+            "button"
+          ]
+        }
+      ]
+    },
+    "ZoomStep": {
+      "oneOf": [
+        {
+          "description": "Back to the full screen.",
+          "const": "off"
+        },
+        {
+          "$ref": "#/$defs/Zoom"
+        }
       ]
     }
   }

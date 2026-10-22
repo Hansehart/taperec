@@ -198,7 +198,17 @@ pub fn capture<P: Platform, R: Recorder>(
         // Marks share the clock the capture stamps its frames with.
         timeline.mark(step, recorder.clock());
         // A stopped recorder ends the step at once and explains the failure.
-        let played = desktop.play_while(step, &mut || recorder.check().is_ok());
+        let played = match step {
+            // A zoom starts once its target is found, e.g. a button that appears later.
+            tape::Step::Zoom(Some((target, scale))) => desktop
+                .locate(target, &mut || recorder.check().is_ok())
+                .map(|centre| timeline.zoom(Some((centre, scale.percent())), recorder.clock())),
+            tape::Step::Zoom(None) => {
+                timeline.zoom(None, recorder.clock());
+                Ok(())
+            }
+            _ => desktop.play_while(step, &mut || recorder.check().is_ok()),
+        };
         let result = recorder
             .check()
             .map_err(AppError::from)
@@ -253,10 +263,21 @@ fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Re
             image,
         });
     }
+    let zooms = marks
+        .zooms
+        .into_iter()
+        .map(|zoom| warp::ZoomEntry {
+            at: zoom.at,
+            x: zoom.x,
+            y: zoom.y,
+            percent: zoom.percent,
+        })
+        .collect();
     let file = warp::TimelineFile {
         video: video.to_owned(),
         warps,
         bars,
+        zooms,
     };
     let timeline_error = |detail: String| AppError::Timeline {
         path: path.to_owned(),
@@ -283,7 +304,7 @@ pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
     let capture = dir.join(&file.video);
     // Warps shorter than a frame play as normal footage.
     let warps = warp::visible(file.warps, Duration::from_secs(1) / FPS.get());
-    if warps.is_empty() && file.bars.is_empty() {
+    if warps.is_empty() && file.bars.is_empty() && file.zooms.is_empty() {
         return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
             .map_err(AppError::Render);
     }
@@ -294,13 +315,14 @@ pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
             .map_err(AppError::Render)?;
         let spans = warp::spans(&warps, start);
         let bars = warp::bar_spans(&file.bars, start);
+        let zooms = warp::zoom_views(&file.zooms, start);
         // Warp captions first, then bar images, as the graph numbers its inputs.
         let images: Vec<PathBuf> = warps
             .iter()
             .map(|w| dir.join(&w.caption))
             .chain(file.bars.iter().map(|b| dir.join(&b.image)))
             .collect();
-        let graph = warp::filter_graph(&spans, &bars, FPS).map_err(AppError::Warp)?;
+        let graph = warp::filter_graph(&spans, &bars, &zooms, FPS).map_err(AppError::Warp)?;
         let args = warp::render_args(&zeroed, &images, &graph, out);
         recorder::encode("ffmpeg", &args, out).map_err(AppError::Render)
     })();
@@ -407,7 +429,7 @@ mod tests {
             let mut desktop = Desktop::new(platform);
             let raw = Path::new("/out/t.raw.mov");
             let marks = capture(
-                &tape("  - bar: Building\n  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - sleep: 1s\n"),
+                &tape("  - bar: Building\n  - zoom: { point: { x: 400, y: 300 }, scale: 2 }\n  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - zoom: off\n  - sleep: 1s\n"),
                 &mut desktop,
                 &mut recorder,
                 raw,
@@ -425,6 +447,24 @@ mod tests {
             assert_eq!(marked[0].span.start, Duration::from_secs(2));
             assert_eq!(marked[0].span.end, Duration::from_secs(12));
             assert_eq!(marked[0].span.length, Duration::from_secs(5));
+            // The zoom starts at once, onto its point, and ends after the warp.
+            assert_eq!(
+                marks.zooms,
+                [
+                    warp::MarkedZoom {
+                        at: Duration::ZERO,
+                        x: 400,
+                        y: 300,
+                        percent: 200,
+                    },
+                    warp::MarkedZoom {
+                        at: Duration::from_secs(12),
+                        x: 960,
+                        y: 540,
+                        percent: 100,
+                    },
+                ]
+            );
             // The bar shows from the start until the capture ends after the last 1 s.
             assert_eq!(
                 marks.bars,
