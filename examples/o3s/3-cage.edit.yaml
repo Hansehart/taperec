@@ -7,6 +7,7 @@ tracks:
     - { text: github.com is allowed · example.com is blocked, from: answered, until: end }
   speed:
     - { label: Building the cage, length: 5s, from: reopen, until: cage-built }
+    - { label: Starting the terminal, length: 2s, from: cage-built + 2s, until: curl - 1s }
   zoom:
     # The answers are the point of the tutorial: close in on the terminal.
     - { point: { x: 850, y: 750 }, scale: 1.75, from: curl, until: end }

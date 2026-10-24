@@ -7,7 +7,10 @@ tracks:
   speed:
     - { label: Installing VS Code, length: 2s, from: vscode-installing, until: vscode-installed }
     - { label: Installing Dev Containers, length: 2s, from: extension-installing, until: extension-installed }
+    # Cloning o3s and macOS verifying VS Code before it asks.
+    - { label: Verifying VS Code, length: 2s, from: extension-installed + 3s, until: open-button - 1s }
   zoom:
     # Every click is zoomed in on, then out once its result shows.
     - { at: terminal-icon, from: terminal-icon, until: terminal-open }
-    - { at: open-button, from: open-button, until: opened }
+    # The Gatekeeper dialog, framed whole.
+    - { window: open-button, from: open-button, until: opened }
