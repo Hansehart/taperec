@@ -31,4 +31,5 @@ steps:
   - bar: ""
   - type: echo done
   - key: return
-  - sleep: 1s
+  # Outlasts the Return's keycap, so the video ends without the bar.
+  - sleep: 3s

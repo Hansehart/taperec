@@ -54,7 +54,10 @@ tracks:
   text:  [{ text: Building the cage, from: start, until: cage-built }]          # "" hides the bar
   speed: [{ label: Building, length: 5s, from: reopen + 3s, until: cage-built }]
   zoom:  [{ at: results, scale: 1.75, from: results - 0.5s, duration: 6s }]    # or `point: { x, y }`
+bar: { left: [text], right: [speed, zoom, keys] }   # the default; a part left out never shows
 ```
+
+Every after effect shows in the bar along the top: `text`, the speed-up's label and real duration (`speed`), the zoom factor (`zoom`), and each shortcut and paste as keycaps for 1.5 s (`keys`, labelled by the recording platform, e.g. ⇧ ⌘ P). The bar appears whenever one of its parts has something to show.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 

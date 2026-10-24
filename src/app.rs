@@ -10,7 +10,7 @@ use crate::cli::Args;
 use crate::cli::RecorderChoice;
 use crate::desktop::Desktop;
 use crate::platform::macos::{Capture, Helper, ScreenRecorder};
-use crate::platform::{Platform, Recorder};
+use crate::platform::{Platform, Recorder, Shortcut};
 use crate::process::SystemRunner;
 use crate::recorder::FPS;
 use crate::{desktop, edit, overlay, recorder, tape, warp};
@@ -221,7 +221,16 @@ pub fn capture<P: Platform, R: Recorder>(
     timeline.moment(tape::MarkName::START, recorder.clock(), None);
     for step in &tape.steps {
         // Marks share the clock the capture stamps its frames with.
-        timeline.mark(step, recorder.clock());
+        let at = recorder.clock();
+        timeline.mark(step, at);
+        let shortcut = match step {
+            tape::Step::Key(chord) => Some(Shortcut::Chord(chord)),
+            tape::Step::Paste(_) => Some(Shortcut::Paste),
+            _ => None,
+        };
+        if let Some(shortcut) = shortcut {
+            timeline.key(desktop.shortcut_labels(shortcut), at);
+        }
         // A stopped recorder ends the step at once and explains the failure.
         let played = match step {
             // A zoom starts once its target is found, e.g. a button that appears later.
@@ -295,7 +304,7 @@ fn save_timeline(path: &Path, video: &str, marks: warp::Marks) -> Result<(), App
             percent: zoom.percent,
         })
         .collect();
-    let marks = marks
+    let moments = marks
         .moments
         .into_iter()
         .map(|moment| warp::MarkEntry {
@@ -305,12 +314,21 @@ fn save_timeline(path: &Path, video: &str, marks: warp::Marks) -> Result<(), App
             y: moment.position.map(|p| p.y),
         })
         .collect();
+    let keys = marks
+        .keys
+        .into_iter()
+        .map(|key| warp::KeyEntry {
+            at: key.at,
+            labels: key.labels,
+        })
+        .collect();
     let file = warp::TimelineFile {
         video: video.to_owned(),
         warps,
         bars,
         zooms,
-        marks,
+        marks: moments,
+        keys,
     };
     let timeline_error = |detail: String| AppError::Timeline {
         path: path.to_owned(),
@@ -335,18 +353,22 @@ pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), Ap
     let text = fs::read_to_string(timeline).map_err(|e| timeline_error(e.to_string()))?;
     let mut file: warp::TimelineFile =
         serde_saphyr::from_str(&text).map_err(|e| timeline_error(e.to_string()))?;
+    let mut layout = edit::Layout::default();
     if let Some(path) = edit {
         let parse_error = |error| AppError::Parse {
             path: path.to_owned(),
             error,
         };
-        file = edit::apply(&parse_file(path, edit::parse)?, file).map_err(parse_error)?;
+        let edit = parse_file(path, edit::parse)?;
+        file = edit::apply(&edit, file).map_err(parse_error)?;
+        layout = edit.layout();
     }
     let dir = timeline.parent().unwrap_or(Path::new("."));
     let capture = dir.join(&file.video);
     // Warps shorter than a frame play as normal footage.
-    let warps = warp::visible(file.warps, Duration::from_secs(1) / FPS.get());
-    if warps.is_empty() && file.bars.is_empty() && file.zooms.is_empty() {
+    let warps = warp::visible(file.warps.clone(), Duration::from_secs(1) / FPS.get());
+    let states = warp::bar_states(&file, &warps, &layout, warp::end_of(&file));
+    if warps.is_empty() && states.is_empty() && file.zooms.is_empty() {
         return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
             .map_err(AppError::Render);
     }
@@ -358,30 +380,35 @@ pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), Ap
         detail: e.to_string(),
     })?;
     let rendered = (|| {
-        // Warp captions first, then bars, as the graph numbers its inputs.
-        let mut images = Vec::new();
-        for (index, warp) in warps.iter().enumerate() {
-            let runs = warp::caption(&warp.label, warp.end.saturating_sub(warp.start));
-            let image = scratch.join(format!("warp{index}.png"));
-            overlay::write_png(&overlay::caption(&runs)?, &image)?;
-            images.push(image);
-        }
-        for (index, bar) in file.bars.iter().enumerate() {
-            let image = scratch.join(format!("bar{index}.png"));
-            overlay::write_png(
-                &overlay::bar(&[overlay::Run::Text(bar.text.clone())])?,
-                &image,
-            )?;
-            images.push(image);
-        }
+        // One image per state of the bar, joined into one stream by an ffconcat list.
+        let bar_list = if states.is_empty() {
+            None
+        } else {
+            let mut images = Vec::new();
+            for (index, (_, _, bar)) in states.iter().enumerate() {
+                let name = format!("bar{index}.png");
+                overlay::write_png(&overlay::bar(bar)?, &scratch.join(&name))?;
+                images.push(name);
+            }
+            overlay::write_png(&overlay::gap(), &scratch.join("gap.png"))?;
+            let spans: Vec<(Duration, Duration)> = states
+                .iter()
+                .map(|(from, until, _)| (from.saturating_sub(start), until.saturating_sub(start)))
+                .collect();
+            let list = scratch.join("bar.ffconcat");
+            fs::write(&list, warp::bar_list(&spans, &images, "gap.png")).map_err(|e| {
+                AppError::Overlay(overlay::Error::Write(format!("{}: {e}", list.display())))
+            })?;
+            Some(list)
+        };
         let zeroed = scratch.join("zeroed.mp4");
         recorder::encode("ffmpeg", &recorder::remux_args(&capture, &zeroed), &zeroed)
             .map_err(AppError::Render)?;
         let spans = warp::spans(&warps, start);
-        let bars = warp::bar_spans(&file.bars, start);
         let zooms = warp::zoom_views(&file.zooms, start);
-        let graph = warp::filter_graph(&spans, &bars, &zooms, FPS).map_err(AppError::Warp)?;
-        let args = warp::render_args(&zeroed, &images, &graph, out);
+        let graph =
+            warp::filter_graph(&spans, bar_list.is_some(), &zooms, FPS).map_err(AppError::Warp)?;
+        let args = warp::render_args(&zeroed, bar_list.as_deref(), &graph, out);
         recorder::encode("ffmpeg", &args, out).map_err(AppError::Render)
     })();
     // Best effort; the render's own result is the one reported.
@@ -600,12 +627,12 @@ mod tests {
         }
 
         #[test]
-        fn a_tape_without_after_effects_stops_cleanly_marking_start_and_end() {
+        fn a_tape_without_after_effects_marks_start_end_and_its_shortcuts() {
             let platform = FakePlatform::default();
             let mut recorder = platform.recorder();
             let mut desktop = Desktop::new(platform);
             let marked = capture(
-                &tape("  - paste: echo hi\n  - key: return\n"),
+                &tape("  - paste: echo hi\n  - sleep: 2s\n  - key: primary+k\n"),
                 &mut desktop,
                 &mut recorder,
                 Path::new("/out/t.raw.mov"),
@@ -614,9 +641,26 @@ mod tests {
             .unwrap();
             let names: Vec<&str> = marked.moments.iter().map(|m| m.name.as_str()).collect();
             assert_eq!(names, ["start", "end"]);
+            // Each shortcut at its step's start, labelled by the platform.
+            let keys: Vec<(Duration, Vec<String>)> = marked
+                .keys
+                .iter()
+                .map(|k| (k.at, k.labels.clone()))
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    (Duration::ZERO, vec!["paste".to_owned()]),
+                    (
+                        Duration::from_secs(2),
+                        vec!["primary".to_owned(), "k".to_owned()]
+                    ),
+                ]
+            );
             assert_eq!(
                 warp::Marks {
                     moments: Vec::new(),
+                    keys: Vec::new(),
                     ..marked
                 },
                 warp::Marks::default()

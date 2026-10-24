@@ -2,8 +2,8 @@
 # Writes lucide.ttf: the icons taperec draws, cut from a Lucide font release with fonttools' pyftsubset.
 set -eu
 version=1.61.0
-# fast-forward; codepoints from the release's lucide-font/codepoints.json.
-unicodes=U+E0BD
+# fast-forward and zoom-in; codepoints from the release's lucide-font/codepoints.json.
+unicodes=U+E0BD,U+E1B6
 cd "$(dirname "$0")"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

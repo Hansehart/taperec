@@ -4,10 +4,10 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use super::{CaptureError, Control, Error, Platform, Recorder};
+use super::{CaptureError, Control, Error, Platform, Recorder, Shortcut};
 use crate::process::{Output, Runner};
 use crate::recorder::{self, Recording};
-use crate::tape::{AppName, KeyChord, Point, ShellCommand};
+use crate::tape::{AppName, Key, KeyChord, Modifier, Point, ShellCommand};
 use crate::units;
 
 /// The Swift helper that drives input and reads the screen (`tools/desktop`).
@@ -92,6 +92,10 @@ impl<R: Runner> Platform for Helper<R> {
 
     fn key(&mut self, chord: &KeyChord) -> Result<(), Error> {
         self.helper(&["key", &chord.to_string()], None).map(drop)
+    }
+
+    fn shortcut_labels(&self, shortcut: Shortcut<'_>) -> Vec<String> {
+        shortcut_labels(shortcut)
     }
 
     fn type_char(&mut self, c: char) -> Result<(), Error> {
@@ -289,12 +293,93 @@ fn parse_dock(text: &str) -> Option<Vec<(String, Point)>> {
         .collect()
 }
 
+/// The keycaps macOS shows for `shortcut`: modifiers in the menus' order ⌃ ⌥ ⇧ ⌘, then the key.
+fn shortcut_labels(shortcut: Shortcut<'_>) -> Vec<String> {
+    let Shortcut::Chord(chord) = shortcut else {
+        // The helper pastes with ⌘V.
+        return vec!["⌘".to_owned(), "V".to_owned()];
+    };
+    let held = |wanted: &[Modifier]| chord.modifiers().iter().any(|m| wanted.contains(m));
+    let modifiers = [
+        (&[Modifier::Fn][..], "fn"),
+        (&[Modifier::Ctrl], "⌃"),
+        (&[Modifier::Alt], "⌥"),
+        (&[Modifier::Shift], "⇧"),
+        (&[Modifier::Primary, Modifier::Cmd], "⌘"),
+    ];
+    let mut labels: Vec<String> = modifiers
+        .iter()
+        .filter(|(wanted, _)| held(wanted))
+        .map(|(_, label)| (*label).to_owned())
+        .collect();
+    labels.push(match chord.key() {
+        Key::Char(c) => c.to_ascii_uppercase().to_string(),
+        Key::Named(name) => key_label(name),
+    });
+    labels
+}
+
+/// A named key as its symbol on a Mac keyboard, or its name in words, e.g. `Page Up` without one in Inter.
+fn key_label(name: &str) -> String {
+    let symbol = match name {
+        "return" => "⏎",
+        "esc" => "⎋",
+        "tab" => "⇥",
+        "delete" => "⌫",
+        "fwd-delete" => "⌦",
+        "arrow-up" => "↑",
+        "arrow-down" => "↓",
+        "arrow-left" => "←",
+        "arrow-right" => "→",
+        "page-up" => "⇞",
+        "page-down" => "⇟",
+        "home" => "↖",
+        "end" => "↘",
+        _ => {
+            return name
+                .split('-')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    chars.next().map_or_else(String::new, |first| {
+                        first.to_ascii_uppercase().to_string() + chars.as_str()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    };
+    symbol.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::desktop::{Desktop, POLL_INTERVAL, UNTIL_POLL_INTERVAL};
     use crate::process::command_line;
     use crate::tape::{self, Step};
+
+    fn labels(chord: &str) -> Vec<String> {
+        let tape = tape::parse(&format!("output: t.mp4\nsteps:\n  - key: {chord}\n")).unwrap();
+        match &tape.steps[0] {
+            Step::Key(chord) => shortcut_labels(Shortcut::Chord(chord)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn shortcuts_read_as_on_a_mac_keyboard() {
+        assert_eq!(labels("primary+shift+p"), ["⇧", "⌘", "P"]);
+        assert_eq!(labels("cmd+alt+ctrl+x"), ["⌃", "⌥", "⌘", "X"]);
+        assert_eq!(labels("primary+cmd+k"), ["⌘", "K"]);
+        assert_eq!(labels("return"), ["⏎"]);
+        assert_eq!(labels("shift+arrow-up"), ["⇧", "↑"]);
+        assert_eq!(labels("page-up"), ["⇞"]);
+        assert_eq!(labels("enter"), ["Enter"]);
+        assert_eq!(labels("fn+f5"), ["fn", "F5"]);
+        assert_eq!(labels("num-plus"), ["Num Plus"]);
+        assert_eq!(labels("space"), ["Space"]);
+        assert_eq!(shortcut_labels(Shortcut::Paste), ["⌘", "V"]);
+    }
 
     /// Records every call and replies from a script of canned outputs.
     #[derive(Default)]

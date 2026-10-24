@@ -4,15 +4,23 @@
   "description": "An edit file: items on tracks, each placed against the recording's marks.",
   "type": "object",
   "properties": {
+    "bar": {
+      "description": "Where the bar shows each part; `{ left: [text], right: [speed, zoom, keys] }` unless given.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Layout"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "tracks": {
       "description": "The tracks; within one, a later item lies on top of an earlier one.",
       "$ref": "#/$defs/Tracks"
     }
   },
   "additionalProperties": false,
-  "required": [
-    "tracks"
-  ],
   "$defs": {
     "BarText": {
       "type": "string"
@@ -26,6 +34,34 @@
         "2m"
       ],
       "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?[sm])$"
+    },
+    "Layout": {
+      "description": "Where the bar along the top of the video shows its parts; a part left out never shows.",
+      "type": "object",
+      "properties": {
+        "center": {
+          "description": "Parts in the middle, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Part"
+          }
+        },
+        "left": {
+          "description": "Parts from the left edge, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Part"
+          }
+        },
+        "right": {
+          "description": "Parts up to the right edge, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Part"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "MarkRef": {
       "type": "string",
@@ -49,6 +85,31 @@
       "type": "string",
       "minLength": 1,
       "pattern": "\\S"
+    },
+    "Part": {
+      "description": "What the bar can show.",
+      "oneOf": [
+        {
+          "description": "The text of the `text` track and the tape's `bar` steps.",
+          "type": "string",
+          "const": "text"
+        },
+        {
+          "description": "Each shortcut pressed, as keycaps for 1.5 s.",
+          "type": "string",
+          "const": "keys"
+        },
+        {
+          "description": "A speed-up's label and how long it really took.",
+          "type": "string",
+          "const": "speed"
+        },
+        {
+          "description": "How far the view is zoomed in.",
+          "type": "string",
+          "const": "zoom"
+        }
+      ]
     },
     "Point": {
       "description": "A screen position in pixels from the top-left corner.",
@@ -175,7 +236,7 @@
       "type": "object",
       "properties": {
         "speed": {
-          "description": "Stretches fast-forwarded under a caption; they must not overlap.",
+          "description": "Stretches fast-forwarded, shown in the bar; they must not overlap.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SpeedItem"

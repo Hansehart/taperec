@@ -115,6 +115,23 @@ jobs:
           echo "bar strip luma: $shown while shown, $hidden once hidden"
           # The strip is 60 % black, so it keeps at most 40 % of what lies beneath; 60 % leaves room for encoding.
           [ $((shown * 10)) -lt $((hidden * 6)) ] || { echo "::error::the bar is missing or never hides"; exit 1; }
+      # The speed-up shows at the bar's right end: half a second into it, its label lights the strip there.
+      - name: Check the speed-up in the bar
+        run: |
+          probe=$(ffprobe -v error -show_entries format=start_time:format_tags=com.taperec.start -of default=nw=1 taperec/smoke.raw.*)
+          start=$(sed -n 's/^TAG:com.taperec.start=//p' <<<"$probe")
+          start=${start:-$(sed -n 's/^start_time=//p' <<<"$probe")}
+          waiting=$(sed -n '/name: waiting/,/at:/s/.*at: //p' taperec/smoke.timeline.yaml)
+          at=$(awk -v w="$waiting" -v s="$start" 'BEGIN { printf "%.3f", w - s + 0.5 }')
+          luma() {
+            ffmpeg -v error -ss "$1" -i taperec/smoke.mp4 -frames:v 1 \
+              -vf "crop=300:30:1590:17,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - |
+              sed -n 's/.*YAVG=//p' | head -n 1
+          }
+          sped=$(luma "$at")
+          plain=$(luma 3)
+          echo "bar's right end luma: $sped at ${at}s in the speed-up, $plain with the text alone"
+          awk -v a="$sped" -v b="$plain" 'BEGIN { exit !(a > b + 10) }' || { echo "::error::the speed-up is missing from the bar"; exit 1; }
       # `auto` picks ScreenCaptureKit with a hardware encoder, ffmpeg without one.
       - name: Show the recorder auto chose
         run: |
