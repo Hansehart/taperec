@@ -1,53 +1,48 @@
 # yaml-language-server: $schema=../../schema/taperec.schema.json
 # Part 2: VS Code, the Dev Containers extension and o3s, with Docker running.
 output: o3s-2-vscode.mp4
+# Texts, speed-ups and zooms live in the edit file, placed against these marks.
+edit: 2-vscode.edit.yaml
 steps:
   - set: { moveDuration: 700ms }
-  - text: "2/3 · Install VS Code and Dev Containers, clone o3s"
   - sleep: 1s
-  # Every click is zoomed in on, then out once its result shows.
-  - zoom: { dock: Terminal }
+  - mark: { name: terminal-icon, at: { dock: Terminal } }
   - click: { dock: Terminal }
   - waitWindow: { title: sh, timeout: 30s }
   - sleep: 500ms
-  - zoom: off
+  - mark: terminal-open
   - focus: Terminal
   - sleep: 1s
   - key: primary+k
   - paste: brew install --cask visual-studio-code
   - key: return
-  - warp:
-      label: Installing VS Code
-      length: 2s
-      steps:
-        - waitUntil:
-            command: >-
-              test -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' &&
-              ! pgrep -f brew.rb
-            timeout: 4m
+  - mark: vscode-installing
+  - waitUntil:
+      command: >-
+        test -x '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' &&
+        ! pgrep -f brew.rb
+      timeout: 4m
+  - mark: vscode-installed
   # The Marketplace sometimes serves an unreadable signature, so a failed install is tried once more.
   - paste: >-
       code --install-extension ms-vscode-remote.remote-containers ||
       code --install-extension ms-vscode-remote.remote-containers
   - key: return
-  - warp:
-      label: Installing Dev Containers
-      length: 2s
-      steps:
-        - waitUntil:
-            command: >-
-              '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' --list-extensions |
-              grep -qi remote-containers
-            timeout: 3m
+  - mark: extension-installing
+  - waitUntil:
+      command: >-
+        '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code' --list-extensions |
+        grep -qi remote-containers
+      timeout: 3m
+  - mark: extension-installed
   - key: primary+k
   - paste: git clone https://github.com/Hansehart/o3s.git && code o3s
   - key: return
   # macOS asks once before opening an app downloaded from the internet.
-  - text: "macOS asks once before opening an app from the internet"
-  - zoom: { button: Open, timeout: 2m }
+  - mark: { name: open-button, at: { button: Open, timeout: 2m } }
   - click: { button: Open, timeout: 2m }
   - sleep: 500ms
-  - zoom: off
+  - mark: opened
   - waitWindow: { title: o3s, timeout: 2m }
-  - text: "2/3 · Install VS Code and Dev Containers, clone o3s"
+  - mark: o3s-open
   - sleep: 3s
