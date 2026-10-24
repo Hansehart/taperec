@@ -44,7 +44,7 @@ steps:
   - click: { button: Open, timeout: 2m }
 ```
 
-Each recording also leaves its raw material next to the video (`<name>.raw.mkv` or `.raw.mov`, `<name>.timeline.yaml` and the warp captions), so `taperec render <name>.timeline.yaml [--out FILE]` rebuilds the video anywhere ffmpeg runs, without recording again.
+Each recording also leaves its raw material next to the video (`<name>.raw.mkv` or `.raw.mov`, `<name>.timeline.yaml` and the warp captions), so `taperec render <name>.timeline.yaml [--out FILE]` rebuilds the video without recording again. Render draws the warp captions and bar from the timeline's texts with `taperec-caption` on macOS; elsewhere it reuses images drawn before and needs only ffmpeg.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 

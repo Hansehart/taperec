@@ -55,6 +55,13 @@ pub enum AppError {
     Caption(recorder::Error),
     /// Rendering the warped video failed.
     Render(recorder::Error),
+    /// A drawn overlay image that cannot be put in place.
+    Image {
+        /// The image path.
+        path: PathBuf,
+        /// The I/O error.
+        detail: String,
+    },
     /// A timeline file that cannot be read or written.
     Timeline {
         /// The timeline path.
@@ -95,6 +102,7 @@ impl fmt::Display for AppError {
             Self::Timeline { path, detail } => {
                 write!(f, "timeline {}: {detail}", path.display())
             }
+            Self::Image { path, detail } => write!(f, "cannot place {}: {detail}", path.display()),
         }
     }
 }
@@ -228,41 +236,31 @@ pub fn capture<P: Platform, R: Recorder>(
     Ok(marks)
 }
 
-/// Renders each warp's caption and bar text next to the capture and writes the timeline file pointing at them.
+/// Writes the timeline file naming the warps, bar texts, zooms and their image files; `render` draws the images.
 fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Result<(), AppError> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let mut warps = Vec::with_capacity(marks.warps.len());
-    for (index, mark) in marks.warps.into_iter().enumerate() {
-        let caption = format!("{stem}.warp{index}.png");
-        let text = warp::caption(&mark.label, mark.span.end.saturating_sub(mark.span.start));
-        let image = dir.join(&caption);
-        let args = [OsString::from(text), image.clone().into_os_string()];
-        recorder::encode(CAPTION_TOOL, &args, &image).map_err(AppError::Caption)?;
-        warps.push(warp::WarpEntry {
+    let warps = marks
+        .warps
+        .into_iter()
+        .enumerate()
+        .map(|(index, mark)| warp::WarpEntry {
             label: mark.label,
             start: mark.span.start,
             end: mark.span.end,
             length: mark.span.length,
-            caption,
-        });
-    }
-    let mut bars = Vec::with_capacity(marks.bars.len());
-    for (index, bar) in marks.bars.into_iter().enumerate() {
-        let image = format!("{stem}.bar{index}.png");
-        let path = dir.join(&image);
-        let args = [
-            OsString::from("--bar"),
-            OsString::from(&bar.text),
-            path.clone().into_os_string(),
-        ];
-        recorder::encode(CAPTION_TOOL, &args, &path).map_err(AppError::Caption)?;
-        bars.push(warp::BarEntry {
+            caption: format!("{stem}.warp{index}.png"),
+        })
+        .collect();
+    let bars = marks
+        .bars
+        .into_iter()
+        .enumerate()
+        .map(|(index, bar)| warp::BarEntry {
             text: bar.text,
             start: bar.start,
             end: bar.end,
-            image,
-        });
-    }
+            image: format!("{stem}.bar{index}.png"),
+        })
+        .collect();
     let zooms = marks
         .zooms
         .into_iter()
@@ -308,6 +306,19 @@ pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
         return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
             .map_err(AppError::Render);
     }
+    // Overlays come from the timeline's texts, so an edited timeline renders its new texts.
+    for warp in &warps {
+        let text = warp::caption(&warp.label, warp.end.saturating_sub(warp.start));
+        draw(
+            CAPTION_TOOL,
+            &[OsString::from(text)],
+            &dir.join(&warp.caption),
+        )?;
+    }
+    for bar in &file.bars {
+        let args = [OsString::from("--bar"), OsString::from(&bar.text)];
+        draw(CAPTION_TOOL, &args, &dir.join(&bar.image))?;
+    }
     let start = recorder::probe_start("ffprobe", &capture)?;
     let zeroed = std::env::temp_dir().join(format!("taperec-{}-zeroed.mp4", process::id()));
     let rendered = (|| {
@@ -328,6 +339,23 @@ pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
     })();
     remove(&zeroed);
     rendered
+}
+
+/// Draws an overlay image with `program args… <image>`; without the program, e.g. off macOS, an image drawn
+/// before is kept.
+fn draw(program: &str, args: &[OsString], image: &Path) -> Result<(), AppError> {
+    // Drawn aside, so a failure never removes an image drawn before.
+    let fresh = image.with_extension("new.png");
+    let mut args = args.to_vec();
+    args.push(fresh.clone().into_os_string());
+    match recorder::encode(program, &args, &fresh) {
+        Ok(()) => fs::rename(&fresh, image).map_err(|e| AppError::Image {
+            path: image.to_owned(),
+            detail: e.to_string(),
+        }),
+        Err(recorder::Error::Spawn { .. }) if image.exists() => Ok(()),
+        Err(error) => Err(AppError::Caption(error)),
+    }
 }
 
 /// Deletes an intermediate file, best effort.
@@ -400,6 +428,75 @@ mod tests {
             matches!(&errors[0], AppError::Parse { path, .. } if *path == bad),
             "{errors:?}"
         );
+    }
+
+    /// A `sh -c` tool drawing `script` with the image path as `$0`.
+    fn tool(script: &str) -> [OsString; 2] {
+        [OsString::from("-c"), OsString::from(script)]
+    }
+
+    fn image(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("taperec-draw-{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("bar0.png")
+    }
+
+    #[test]
+    fn draw_replaces_an_image_with_a_fresh_one() {
+        let path = image("fresh");
+        fs::write(&path, "old").unwrap();
+        draw("sh", &tool("echo new > \"$0\""), &path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+    }
+
+    #[test]
+    fn without_the_tool_an_image_drawn_before_is_kept() {
+        let path = image("kept");
+        fs::write(&path, "drawn on a Mac").unwrap();
+        draw("/nonexistent/taperec-caption", &[], &path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "drawn on a Mac");
+    }
+
+    #[test]
+    fn without_the_tool_or_an_image_drawing_fails() {
+        let path = image("missing");
+        let _ = fs::remove_file(&path);
+        let err = draw("/nonexistent/taperec-caption", &[], &path).unwrap_err();
+        assert!(
+            matches!(err, AppError::Caption(recorder::Error::Spawn { .. })),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_failing_tool_leaves_the_image_drawn_before() {
+        let path = image("failing");
+        fs::write(&path, "old").unwrap();
+        let err = draw("sh", &tool("exit 3"), &path).unwrap_err();
+        assert!(
+            matches!(err, AppError::Caption(recorder::Error::Exit { .. })),
+            "{err:?}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+    }
+
+    #[test]
+    fn the_timeline_is_saved_without_drawing_anything() {
+        let dir = std::env::temp_dir().join(format!("taperec-save-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let marks = warp::Marks {
+            bars: vec![warp::MarkedBar {
+                start: Duration::from_secs(1),
+                end: Duration::from_secs(2),
+                text: "Part 1".into(),
+            }],
+            ..warp::Marks::default()
+        };
+        let path = dir.join("t.timeline.yaml");
+        save_timeline(&path, "t", "t.raw.mkv", marks).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("image: t.bar0.png"), "{text}");
+        assert!(!dir.join("t.bar0.png").exists());
     }
 
     #[test]
