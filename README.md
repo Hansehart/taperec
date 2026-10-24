@@ -57,7 +57,7 @@ tracks:
 layout: { text: top-left, effects: top-right, keys: bottom }   # the default; `off` hides a kind
 ```
 
-Texts and effects (a speed-up's label and real duration, a zoom's factor) announce themselves in the centre of the video, then glide to where `layout` keeps them while they last; each shortcut and paste shows as keycaps above the Dock for 1.5 s, labelled by the recording platform, e.g. ⇧ ⌘ P.
+Texts and speed-ups (label and real duration) announce themselves in the centre of the video the first time they show, then glide to where `layout` keeps them while they last; a zoom's factor goes straight there, as the zoom points at the centre; each shortcut and paste shows as keycaps above the Dock for 1.5 s, labelled by the recording platform, e.g. ⇧ ⌘ P.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 

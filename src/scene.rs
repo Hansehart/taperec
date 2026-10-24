@@ -1,5 +1,5 @@
-//! What the overlays show and when, in the final video's time: texts and effects announce themselves in the
-//! centre, then glide to where the layout keeps them; shortcuts show on press.
+//! What the overlays show and when, in the final video's time: texts and speed-ups announce themselves in
+//! the centre, then glide to where the layout keeps them; zooms and shortcuts show straight where they belong.
 
 use std::time::Duration;
 
@@ -80,24 +80,26 @@ pub fn elements(
     let out = |t: Duration| warp::output_time(t.saturating_sub(start), spans);
     let end = out(warp::end_of(timeline));
     let mut elements = Vec::new();
-    let mut card = |content: Vec<Run>, home: Position, appear: Duration, until: Duration| {
-        if home != Position::Off {
-            elements.push(Element {
-                content,
-                look: Look::Card,
-                home,
-                appear: out(appear),
-                end: out(until),
-                announce: true,
-            });
-        }
-    };
+    let mut card =
+        |content: Vec<Run>, home: Position, appear: Duration, until: Duration, announce: bool| {
+            if home != Position::Off {
+                elements.push(Element {
+                    content,
+                    look: Look::Card,
+                    home,
+                    appear: out(appear),
+                    end: out(until),
+                    announce,
+                });
+            }
+        };
     for text in timeline.texts.iter().filter(|text| !text.text.is_empty()) {
         card(
             vec![Run::Text(text.text.clone())],
             layout.text,
             text.start,
             text.end,
+            true,
         );
     }
     for warp in warps {
@@ -107,6 +109,7 @@ pub fn elements(
             layout.effects,
             warp.start,
             warp.end,
+            true,
         );
     }
     let zooms = &timeline.zooms;
@@ -121,7 +124,8 @@ pub fn elements(
                 Run::Icon(Icon::ZoomIn),
                 Run::Text(format!("  {}×", warp::factor(zoom.percent))),
             ];
-            card(runs, layout.effects, zoom.at, until);
+            // The zoom points at the centre, so its badge goes straight to its corner.
+            card(runs, layout.effects, zoom.at, until, false);
         }
     }
     if layout.keys != Position::Off {
@@ -329,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn texts_and_effects_announce_then_settle_in_their_corners() {
+    fn texts_announce_and_zooms_go_straight_to_their_corner() {
         let mut file = timeline();
         file.texts = vec![text("Part 1", 0, 50), text("", 50, 60)];
         file.zooms = vec![
@@ -360,7 +364,8 @@ mod tests {
             (got[1].home, got[1].appear, got[1].end),
             (Position::TopRight, secs(10), secs(20))
         );
-        assert!(got.iter().all(|e| e.announce && e.look == Look::Card));
+        assert!(got.iter().all(|e| e.look == Look::Card));
+        assert_eq!((got[0].announce, got[1].announce), (true, false));
         assert_eq!(got[0].progress(ms(1100)), 0.0);
         assert!((got[0].progress(ms(1450)) - 0.5).abs() < 1e-6);
         assert_eq!(got[0].progress(ms(1700)), 1.0);

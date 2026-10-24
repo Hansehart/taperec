@@ -47,7 +47,8 @@ luma() {
 fail() { echo "::error::$1"; exit 1; }
 
 # Nine seconds: 0–1 s nothing; the text announced 1–2.2 s, gliding to 2.7 s, top left until 4 s; ⇧⌘P
-# 2–3.5 s; the zoom announced 3–4 s; the speed-up 4–7 s, announced to 5.2 s and top right from 5.7 s; ⌘V 8 s on.
+# 2–3.5 s; the zoom's badge top right 3–4 s; the speed-up 4–7 s, announced to 5.2 s and top right from 5.7 s;
+# ⌘V 8 s on.
 seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/t.mp4")
 echo "duration: ${seconds}s"
 awk -v s="$seconds" 'BEGIN { exit !(s > 8.8 && s < 9.2) }' || fail "the speed-up left ${seconds}s, expected 9s"
@@ -63,6 +64,7 @@ check() {
 check "the announced text in the centre" 1.5 300:10:810:504 0.6
 check "the settled text top left" 3.5 120:8:40:46 0.6
 check "the shortcut pill above the Dock" 2.5 120:4:900:915 0.6
+check "the zoom badge top right, without an announcement" 3.2 120:8:1740:46 0.6
 check "the speed-up badge top right" 6.5 120:8:1740:46 0.6
 
 # Before its glide, nothing sits top left yet.
