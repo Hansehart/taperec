@@ -1,6 +1,8 @@
 # yaml-language-server: $schema=../schema/taperec.schema.json
-# Plays Dock clicks, focus, windows, typing, pasting, keys, waits and a warp on a hosted Mac.
+# Plays Dock clicks, focus, windows, typing, pasting, keys and waits on a hosted Mac; the edit file zooms and
+# speeds up against its marks.
 output: smoke.mp4
+edit: smoke.edit.yaml
 steps:
   - set: { moveDuration: 600ms, typingSpeed: 40ms }
   - bar: taperec smoke test
@@ -19,15 +21,12 @@ steps:
   - waitUntil:
       command: grep -qx 'the quick brown fox jumps over 0123456789 lazy dogs' /tmp/taperec-typed
       timeout: 10s
-  - zoom: { point: { x: 480, y: 200 } }
+  - mark: { name: prompt, at: { point: { x: 480, y: 200 } } }
   - type: echo taperec smoke
   - key: return
-  - warp:
-      label: Waiting
-      length: 1s
-      steps:
-        - waitUntil: { command: sleep 3, timeout: 30s }
-  - zoom: off
+  - mark: waiting
+  - waitUntil: { command: sleep 3, timeout: 30s }
+  - mark: waited
   - key: primary+k
   - bar: ""
   - type: echo done

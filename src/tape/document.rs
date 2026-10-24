@@ -1,15 +1,16 @@
 //! The YAML form of a tape: typed steps an editor completes and checks from the JSON Schema.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer};
 
 use super::{
-    duration, key_chord, output_file, AppName, ControlLabel, DockItem, KeyChord, OutputFile, Point,
-    ShellCommand, Step, Tape, Target, ValueError, WarpLabel, WindowName, ZoomScale, DEFAULT_WAIT,
-    NAMED_KEYS,
+    duration, key_chord, output_file, AppName, ControlLabel, DockItem, KeyChord, MarkName,
+    OutputFile, Point, ShellCommand, Step, Tape, Target, ValueError, WarpLabel, WindowName,
+    ZoomScale, DEFAULT_WAIT, NAMED_KEYS,
 };
 
 /// A tape: the video it records and what happens on screen.
@@ -23,6 +24,11 @@ pub(super) struct Document {
     output: OutputFile,
     /// What happens on screen, in order.
     steps: Vec<DocStep>,
+    /// An edit file placing texts, speed-ups and zooms against the tape's marks, relative to the tape, e.g.
+    /// `intro.edit.yaml`.
+    #[serde(default)]
+    #[schemars(with = "Name")]
+    edit: Option<Name>,
 }
 
 /// One action of a tape.
@@ -64,6 +70,106 @@ enum DocStep {
     Zoom(DocZoomStep),
     /// Play the nested steps fast-forwarded into `length` under a caption.
     Warp(Warp),
+    /// Name this moment for the edit file, e.g. `cage-built`, and with `at`, a position on screen.
+    Mark(DocMark),
+}
+
+/// A mark: a name alone, or a name and a target whose position it records.
+#[derive(Debug)]
+enum DocMark {
+    /// This moment.
+    Here(DocMarkName),
+    /// This moment and where the target is.
+    At(DocMarkAt),
+}
+
+impl<'de> Deserialize<'de> for DocMark {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = DocMark;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a name such as `cage-built` or `{ name, at }`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                DocMarkName::try_from(value.to_owned())
+                    .map(DocMark::Here)
+                    .map_err(E::custom)
+            }
+
+            // The map goes straight into `DocMarkAt`, keeping its own checks and messages.
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                DocMarkAt::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(DocMark::At)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl JsonSchema for DocMark {
+    fn schema_name() -> Cow<'static, str> {
+        "Mark".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let name = generator.subschema_for::<DocMarkName>();
+        let at = generator.subschema_for::<DocMarkAt>();
+        json_schema!({ "oneOf": [name, at] })
+    }
+}
+
+/// A mark with the position of a target, for the edit file to zoom onto.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "MarkAt")]
+struct DocMarkAt {
+    /// The mark's name.
+    name: DocMarkName,
+    /// What to locate, like a click target; the mark falls when it is found.
+    at: DocTarget,
+}
+
+/// A mark's name: lowercase letters, digits and hyphens, other than the implicit `start` and `end`.
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "String")]
+struct DocMarkName(MarkName);
+
+impl TryFrom<String> for DocMarkName {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        match MarkName::new(&text) {
+            None => Err("a mark name takes lowercase letters, digits and hyphens"),
+            Some(name) if [MarkName::START, MarkName::END].contains(&name.as_str()) => {
+                Err("`start` and `end` mark every recording already")
+            }
+            Some(name) => Ok(Self(name)),
+        }
+    }
+}
+
+impl JsonSchema for DocMarkName {
+    fn schema_name() -> Cow<'static, str> {
+        "MarkName".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "description": "Lowercase letters, digits and hyphens; `start` and `end` are implicit.",
+            "pattern": "^[a-z0-9-]+$",
+            "not": { "enum": ["start", "end"] },
+            "examples": ["cage-built"],
+        })
+    }
 }
 
 /// Where the pointer goes: exactly one of `point`, `dock` or `button`.
@@ -194,11 +300,11 @@ struct DocZoom {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "Point")]
-struct DocPoint {
+pub(crate) struct DocPoint {
     /// Pixels from the left edge.
-    x: u32,
+    pub(crate) x: u32,
     /// Pixels from the top edge.
-    y: u32,
+    pub(crate) y: u32,
 }
 
 /// A window to wait for.
@@ -261,7 +367,7 @@ struct Warp {
 }
 
 /// Drops the `default: null` schemars adds to optional fields, so editors never suggest it.
-fn without_defaults(schema: &mut Schema) {
+pub(crate) fn without_defaults(schema: &mut Schema) {
     if let Some(properties) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
         for property in properties.values_mut() {
             if let Some(property) = property.as_object_mut() {
@@ -274,7 +380,7 @@ fn without_defaults(schema: &mut Schema) {
 /// Non-empty text without control characters.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "String")]
-struct Name(String);
+pub(crate) struct Name(pub(crate) String);
 
 impl TryFrom<String> for Name {
     type Error = &'static str;
@@ -303,7 +409,7 @@ impl JsonSchema for Name {
 /// Text without control characters, possibly empty.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "String")]
-struct BarText(String);
+pub(crate) struct BarText(pub(crate) String);
 
 impl TryFrom<String> for BarText {
     type Error = &'static str;
@@ -328,7 +434,7 @@ impl JsonSchema for BarText {
 }
 
 /// Schema of a duration such as `500ms`, `1.5s` or `2m`.
-struct DurationSchema;
+pub(crate) struct DurationSchema;
 
 impl JsonSchema for DurationSchema {
     fn schema_name() -> Cow<'static, str> {
@@ -395,11 +501,13 @@ where
     parse(&text).map_err(serde::de::Error::custom)
 }
 
-fn de_duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+pub(crate) fn de_duration<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Duration, D::Error> {
     parsed(deserializer, duration)
 }
 
-fn de_opt_duration<'de, D: Deserializer<'de>>(
+pub(crate) fn de_opt_duration<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Duration>, D::Error> {
     parsed(deserializer, duration).map(Some)
@@ -423,10 +531,11 @@ impl Document {
     /// Flattens the document into playable steps, warps becoming `Warp`/`EndWarp` pairs.
     pub(super) fn lower(self) -> Result<Tape, Violation> {
         let mut steps = Vec::new();
-        lower_steps(self.steps, "steps", false, &mut steps)?;
+        lower_steps(self.steps, "steps", false, &mut BTreeSet::new(), &mut steps)?;
         Ok(Tape {
             output: self.output,
             steps,
+            edit: self.edit.map(|Name(path)| path),
         })
     }
 }
@@ -435,6 +544,7 @@ fn lower_steps(
     doc: Vec<DocStep>,
     at: &str,
     in_warp: bool,
+    marks: &mut BTreeSet<MarkName>,
     out: &mut Vec<Step>,
 ) -> Result<(), Violation> {
     for (index, step) in doc.into_iter().enumerate() {
@@ -497,8 +607,18 @@ fn lower_steps(
                     label: WarpLabel(warp.label.0),
                     length: warp.length,
                 });
-                lower_steps(warp.steps, &format!("{path}.warp.steps"), true, out)?;
+                lower_steps(warp.steps, &format!("{path}.warp.steps"), true, marks, out)?;
                 out.push(Step::EndWarp);
+            }
+            DocStep::Mark(mark) => {
+                let (DocMarkName(name), at) = match mark {
+                    DocMark::Here(name) => (name, None),
+                    DocMark::At(mark) => (mark.name, Some(lower_target(mark.at, &path)?)),
+                };
+                if !marks.insert(name.clone()) {
+                    return Err(violation("a mark's name must be unique in its tape"));
+                }
+                out.push(Step::Mark { name, at });
             }
         }
     }

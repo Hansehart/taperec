@@ -71,8 +71,12 @@ impl<P: Platform> Desktop<P> {
                 timeout,
             } => self.wait_until(command, fail_when.as_ref(), *timeout, alive)?,
             Step::Focus { app, timeout } => self.focus(app, *timeout, alive)?,
-            // Warps, bars and zooms mark the recording; the caller times them.
-            Step::Warp { .. } | Step::EndWarp | Step::Bar(_) | Step::Zoom(_) => {}
+            // Warps, bars, zooms and marks mark the recording; the caller times them.
+            Step::Warp { .. }
+            | Step::EndWarp
+            | Step::Bar(_)
+            | Step::Zoom(_)
+            | Step::Mark { .. } => {}
             Step::Type(text) => self.type_text(text)?,
             Step::Paste(text) => self.platform.paste(text)?,
             Step::Key(chord) => self.press(chord)?,

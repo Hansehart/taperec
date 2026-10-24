@@ -27,6 +27,9 @@ use crate::units::{self, Finer};
 mod document;
 
 pub use document::schema;
+pub(crate) use document::{
+    de_duration, de_opt_duration, without_defaults, BarText, DocPoint, DurationSchema, Name,
+};
 
 /// A position on screen, in pixels from the top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +218,34 @@ pub enum Target {
     },
 }
 
+/// A moment's name in a tape, `[a-z0-9-]+`, for an edit file to place items against; `start` and `end` are
+/// implicit.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MarkName(String);
+
+impl MarkName {
+    /// The mark at the first frame of every recording.
+    pub const START: &'static str = "start";
+    /// The mark at the last frame of every recording.
+    pub const END: &'static str = "end";
+
+    /// The name, if it is lowercase letters, digits and hyphens.
+    #[must_use]
+    pub fn new(name: &str) -> Option<Self> {
+        let valid = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        valid.then(|| Self(name.to_owned()))
+    }
+
+    /// The name as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// How far the video zooms in, in percent of the screen: 150 is 1.5×.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoomScale(u16);
@@ -294,6 +325,13 @@ pub enum Step {
     Zoom(Option<(Target, ZoomScale)>),
     /// Press a key chord.
     Key(KeyChord),
+    /// Name this moment, and with a target, the position it is found at.
+    Mark {
+        /// The name an edit file refers to.
+        name: MarkName,
+        /// Where on screen, located like a click target.
+        at: Option<Target>,
+    },
 }
 
 /// A parsed tutorial.
@@ -303,6 +341,8 @@ pub struct Tape {
     pub output: OutputFile,
     /// What happens on screen.
     pub steps: Vec<Step>,
+    /// The edit file applied when rendering, relative to the tape.
+    pub edit: Option<String>,
 }
 
 /// Why a value in a tape is malformed.
@@ -345,7 +385,7 @@ pub enum Where {
         /// The column.
         column: u64,
     },
-    /// A step by its path, e.g. `steps[2].warp.steps[0]`.
+    /// A step or item by its path, e.g. `steps[2].warp.steps[0]` or `tracks.speed[1].from`.
     Step(String),
     /// The tape as a whole.
     Document,
@@ -389,7 +429,7 @@ pub fn parse(source: &str) -> Result<Tape, ParseError> {
 }
 
 /// A YAML or shape error, with its position when the parser knows it.
-fn yaml_error(error: &serde_saphyr::Error) -> ParseError {
+pub(crate) fn yaml_error(error: &serde_saphyr::Error) -> ParseError {
     let options = serde_saphyr::render_options! { snippets: serde_saphyr::SnippetMode::Off };
     let mut message = error.render_with_options(options);
     let at = error
@@ -406,6 +446,11 @@ fn yaml_error(error: &serde_saphyr::Error) -> ParseError {
         }
     }
     ParseError { at, message }
+}
+
+/// A duration such as `500ms`, `1.5s` or `2m`, if well-formed.
+pub(crate) fn parse_duration(value: &str) -> Option<Duration> {
+    duration(value).ok()
 }
 
 /// Parses `<int>ms`, `<decimal>s` or `<decimal>m` exactly.
@@ -613,7 +658,58 @@ steps:
                         timeout: ms(120_000),
                     }),
                 ],
+                edit: None,
             }
+        );
+    }
+
+    #[test]
+    fn marks_name_moments_once_and_may_record_a_position() {
+        assert_eq!(
+            parse("output: t.mp4\nedit: t.edit.yaml\nsteps:\n  - mark: built\n  - warp: { label: W, length: 1s, steps: [mark: { name: results-2, at: { button: Run } }] }\n")
+                .unwrap(),
+            Tape {
+                output: OutputFile("t.mp4".into()),
+                steps: vec![
+                    Step::Mark {
+                        name: MarkName("built".into()),
+                        at: None,
+                    },
+                    Step::Warp {
+                        label: WarpLabel("W".into()),
+                        length: ms(1000),
+                    },
+                    Step::Mark {
+                        name: MarkName("results-2".into()),
+                        at: Some(Target::Control {
+                            label: ControlLabel("Run".into()),
+                            timeout: DEFAULT_WAIT,
+                        }),
+                    },
+                    Step::EndWarp,
+                ],
+                edit: Some("t.edit.yaml".into()),
+            }
+        );
+        assert_eq!(
+            error("  - mark: a\n  - warp: { label: W, length: 1s, steps: [mark: a] }\n"),
+            ParseError {
+                at: at_step("steps[1].warp.steps[0]"),
+                message: "a mark's name must be unique in its tape".into(),
+            }
+        );
+        for bad in ["Built", "start", "end", "a b", "\"\""] {
+            assert!(
+                matches!(
+                    error(&format!("  - mark: {bad}\n")).at,
+                    Where::Position { .. }
+                ),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            error("  - mark: { name: a, at: {} }\n").at,
+            at_step("steps[0]")
         );
     }
 

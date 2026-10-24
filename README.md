@@ -46,6 +46,16 @@ steps:
 
 Each recording also leaves its raw material next to the video (`<name>.raw.mkv` or `.raw.mov`, `<name>.timeline.yaml` and the warp captions), so `taperec render <name>.timeline.yaml [--out FILE]` rebuilds the video without recording again. Render draws the warp captions and bar from the timeline's texts with `taperec-caption` on macOS; elsewhere it reuses images drawn before and needs only ffmpeg.
 
+To edit without recording again, a tape names moments with `mark: <name>` (or `mark: { name, at: <target> }` to record a position too) and links an edit file with `edit: <file>`. The edit file places items on tracks against those marks plus the implicit `start` and `end`; within a track a later item lies on top of an earlier one, except speed-ups, which must not overlap. `taperec render <name>.timeline.yaml --edit <file>` re-renders after changing it, and `taperec schema edit` prints its schema:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Hansehart/taperec/main/schema/taperec-edit.schema.json
+tracks:
+  text:  [{ text: Building the cage, from: start, until: cage-built }]          # "" hides the bar
+  speed: [{ label: Building, length: 5s, from: reopen + 3s, until: cage-built }]
+  zoom:  [{ at: results, scale: 1.75, from: results - 0.5s, duration: 6s }]    # or `point: { x, y }`
+```
+
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 
 Contributing: run `pre-commit install`, work on a branch, and write commits as `type(scope): subject` with a scope from `.commitlintrc.json`.

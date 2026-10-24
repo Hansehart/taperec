@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "taperec edit",
+  "description": "An edit file: items on tracks, each placed against the recording's marks.",
+  "type": "object",
+  "properties": {
+    "tracks": {
+      "description": "The tracks; within one, a later item lies on top of an earlier one.",
+      "$ref": "#/$defs/Tracks"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "tracks"
+  ],
+  "$defs": {
+    "BarText": {
+      "type": "string"
+    },
+    "Duration": {
+      "description": "A duration: whole milliseconds like `500ms`, or seconds or minutes like `1.5s` or `2m`.",
+      "type": "string",
+      "examples": [
+        "500ms",
+        "1.5s",
+        "2m"
+      ],
+      "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?[sm])$"
+    },
+    "MarkRef": {
+      "type": "string",
+      "examples": [
+        "results"
+      ],
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "Moment": {
+      "description": "A mark of the tape, `start` or `end`, optionally moved by a duration.",
+      "type": "string",
+      "examples": [
+        "start",
+        "cage-built",
+        "reopen + 3s",
+        "results - 0.5s"
+      ],
+      "pattern": "^[a-z0-9-]+( [+-] ([0-9]+ms|[0-9]+(\\.[0-9]+)?[sm]))?$"
+    },
+    "Name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "Point": {
+      "description": "A screen position in pixels from the top-left corner.",
+      "type": "object",
+      "properties": {
+        "x": {
+          "description": "Pixels from the left edge.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "description": "Pixels from the top edge.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ]
+    },
+    "SpeedItem": {
+      "description": "A stretch fast-forwarded into `length` under a caption.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long it really takes.",
+          "$ref": "#/$defs/Duration"
+        },
+        "from": {
+          "description": "Where the stretch starts.",
+          "$ref": "#/$defs/Moment"
+        },
+        "label": {
+          "description": "The caption shown while it plays, e.g. `Installing`.",
+          "$ref": "#/$defs/Name"
+        },
+        "length": {
+          "description": "How long it lasts in the video.",
+          "$ref": "#/$defs/Duration"
+        },
+        "until": {
+          "description": "Where it ends.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Moment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "until"
+          ]
+        },
+        {
+          "required": [
+            "duration"
+          ]
+        }
+      ],
+      "required": [
+        "label",
+        "length",
+        "from"
+      ]
+    },
+    "TextItem": {
+      "description": "Text in the bar from `from` until `until`, or for `duration`.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long it lasts.",
+          "$ref": "#/$defs/Duration"
+        },
+        "from": {
+          "description": "When it starts.",
+          "$ref": "#/$defs/Moment"
+        },
+        "text": {
+          "description": "What the bar shows; `\"\"` hides it.",
+          "$ref": "#/$defs/BarText"
+        },
+        "until": {
+          "description": "When it ends.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Moment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "until"
+          ]
+        },
+        {
+          "required": [
+            "duration"
+          ]
+        }
+      ],
+      "required": [
+        "text",
+        "from"
+      ]
+    },
+    "Tracks": {
+      "description": "The tracks of an edit.",
+      "type": "object",
+      "properties": {
+        "speed": {
+          "description": "Stretches fast-forwarded under a caption; they must not overlap.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SpeedItem"
+          }
+        },
+        "text": {
+          "description": "Text in the bar along the top of the video; `\"\"` hides the bar.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TextItem"
+          }
+        },
+        "zoom": {
+          "description": "Zooms onto a point or a mark's position.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ZoomItem"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ZoomItem": {
+      "description": "A zoom onto a point or a mark's position, eased in at `from` and out at the end.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "A mark recorded with a position, e.g. `mark: { name: results, at: { button: Run } }`.",
+          "$ref": "#/$defs/MarkRef"
+        },
+        "duration": {
+          "description": "How long it lasts.",
+          "$ref": "#/$defs/Duration"
+        },
+        "from": {
+          "description": "When the zoom starts.",
+          "$ref": "#/$defs/Moment"
+        },
+        "point": {
+          "description": "A screen position in pixels from the top-left corner.",
+          "$ref": "#/$defs/Point"
+        },
+        "scale": {
+          "description": "How far to zoom in, from 1 to 3; 1.5 unless given.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 3.0,
+          "minimum": 1.0
+        },
+        "until": {
+          "description": "When it ends.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Moment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "at"
+              ]
+            },
+            {
+              "required": [
+                "point"
+              ]
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "required": [
+                "until"
+              ]
+            },
+            {
+              "required": [
+                "duration"
+              ]
+            }
+          ]
+        }
+      ],
+      "required": [
+        "from"
+      ]
+    }
+  }
+}

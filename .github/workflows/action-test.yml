@@ -78,17 +78,26 @@ jobs:
         run: |
           [ "$VIDEOS" = "taperec/smoke.mp4" ] || { echo "::error::videos output is '$VIDEOS'"; exit 1; }
           tests/verify-video.sh taperec/smoke.mp4
-      # The raw capture, timeline and captions rebuild the video without recording again.
+      # The raw capture, timeline and edit file rebuild the video without recording again.
       - name: Re-render from the raw material
         run: |
           ls taperec/smoke.raw.* taperec/smoke.timeline.yaml taperec/smoke.warp0.png
-          "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --out taperec/rerender.mp4
+          "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --edit tests/smoke.edit.yaml --out taperec/rerender.mp4
           tests/verify-video.sh taperec/rerender.mp4
-      # The zoom changes frames while it lasts and is gone once the tape zooms out.
+      # An edit naming a mark the recording lacks fails with the item's path.
+      - name: Reject an edit with an unknown mark
+        run: |
+          printf 'tracks:\n  text:\n    - { text: x, from: nowhere, duration: 1s }\n' > taperec/bad.edit.yaml
+          if error=$("$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --edit taperec/bad.edit.yaml --out taperec/bad.mp4 2>&1); then
+            echo "::error::rendering a bad edit succeeded"; exit 1
+          fi
+          echo "$error"
+          grep -qF 'tracks.text[0].from' <<<"$error" || { echo "::error::the error names no item"; exit 1; }
+      # The edit's zoom changes frames while it lasts and is gone once it ends.
       - name: Check the zoom
         run: |
-          sed '/^zooms:/,$d' taperec/smoke.timeline.yaml > taperec/nozoom.timeline.yaml
-          "$RUNNER_TEMP/taperec-bin/taperec" render taperec/nozoom.timeline.yaml --out taperec/nozoom.mp4
+          sed '/^  zoom:/,$d' tests/smoke.edit.yaml > taperec/nozoom.edit.yaml
+          "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --edit taperec/nozoom.edit.yaml --out taperec/nozoom.mp4
           ffmpeg -v error -i taperec/smoke.mp4 -i taperec/nozoom.mp4 \
             -lavfi "[0:v][1:v]blend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=taperec/zoom-diff.txt" \
             -f null -
