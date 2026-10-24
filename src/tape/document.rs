@@ -64,8 +64,9 @@ enum DocStep {
     ),
     /// Change the speed of the steps that follow.
     Set(Set),
-    /// Show this text in the bar along the top of the video from here on; `""` hides the bar.
-    Bar(BarText),
+    /// Show this text from here on, announced in the centre and then kept in its corner, e.g.
+    /// `Part 1 · Docker`; `""` hides it.
+    Text(Text),
     /// Zoom the video onto a target from here on, or back out with `off`.
     Zoom(DocZoomStep),
     /// Play the nested steps fast-forwarded into `length` under a caption.
@@ -409,9 +410,9 @@ impl JsonSchema for Name {
 /// Text without control characters, possibly empty.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "String")]
-pub(crate) struct BarText(pub(crate) String);
+pub(crate) struct Text(pub(crate) String);
 
-impl TryFrom<String> for BarText {
+impl TryFrom<String> for Text {
     type Error = &'static str;
 
     fn try_from(text: String) -> Result<Self, Self::Error> {
@@ -423,9 +424,9 @@ impl TryFrom<String> for BarText {
     }
 }
 
-impl JsonSchema for BarText {
+impl JsonSchema for Text {
     fn schema_name() -> Cow<'static, str> {
-        "BarText".into()
+        "Text".into()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -558,7 +559,7 @@ fn lower_steps(
             DocStep::MoveTo(target) => out.push(Step::MoveTo(lower_target(target, &path)?)),
             DocStep::Type(text) => out.push(Step::Type(text)),
             DocStep::Paste(text) => out.push(Step::Paste(text)),
-            DocStep::Bar(BarText(text)) => out.push(Step::Bar(text)),
+            DocStep::Text(Text(text)) => out.push(Step::Text(text)),
             DocStep::Zoom(DocZoomStep::Off) => out.push(Step::Zoom(None)),
             DocStep::Zoom(DocZoomStep::On(zoom)) => {
                 let scale = match zoom.scale {

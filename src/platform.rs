@@ -10,7 +10,7 @@ use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 pub(crate) mod fake;
 pub mod macos;
 
-/// A shortcut the bar shows: a pressed chord, or the keystroke a paste sends.
+/// A shortcut shown as keycaps: a pressed chord, or the keystroke a paste sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shortcut<'a> {
     /// A `key` step's chord.

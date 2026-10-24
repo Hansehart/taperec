@@ -26,9 +26,6 @@
     "steps"
   ],
   "$defs": {
-    "BarText": {
-      "type": "string"
-    },
     "Duration": {
       "description": "A duration: whole milliseconds like `500ms`, or seconds or minutes like `1.5s` or `2m`.",
       "type": "string",
@@ -338,16 +335,16 @@
           ]
         },
         {
-          "description": "Show this text in the bar along the top of the video from here on; `\"\"` hides the bar.",
+          "description": "Show this text from here on, announced in the centre and then kept in its corner, e.g.\n`Part 1 · Docker`; `\"\"` hides it.",
           "type": "object",
           "properties": {
-            "bar": {
-              "$ref": "#/$defs/BarText"
+            "text": {
+              "$ref": "#/$defs/Text"
             }
           },
           "additionalProperties": false,
           "required": [
-            "bar"
+            "text"
           ]
         },
         {
@@ -433,6 +430,9 @@
           ]
         }
       ]
+    },
+    "Text": {
+      "type": "string"
     },
     "WaitUntil": {
       "description": "A shell command to wait for.",

@@ -5,7 +5,7 @@ output: smoke.mp4
 edit: smoke.edit.yaml
 steps:
   - set: { moveDuration: 600ms, typingSpeed: 40ms }
-  - bar: taperec smoke test
+  - text: taperec smoke test
   - sleep: 1s
   - click: { dock: Terminal }
   - waitWindow: { title: sh, timeout: 30s }
@@ -28,8 +28,8 @@ steps:
   - waitUntil: { command: sleep 3, timeout: 30s }
   - mark: waited
   - key: primary+k
-  - bar: ""
+  - text: ""
   - type: echo done
   - key: return
-  # Outlasts the Return's keycap, so the video ends without the bar.
+  # Outlasts the Return's keycaps, so the video ends without overlays.
   - sleep: 3s

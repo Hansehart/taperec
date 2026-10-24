@@ -1,5 +1,6 @@
 //! Ties parsing, desktop playback and recording together.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use crate::platform::macos::{Capture, Helper, ScreenRecorder};
 use crate::platform::{Platform, Recorder, Shortcut};
 use crate::process::SystemRunner;
 use crate::recorder::FPS;
-use crate::{desktop, edit, overlay, recorder, tape, warp};
+use crate::{desktop, edit, overlay, recorder, scene, tape, warp};
 
 /// Why a recording failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +202,7 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
-/// Plays `tape` on `desktop` while `recorder` captures it into `raw`, returning the warps and bar texts on the
+/// Plays `tape` on `desktop` while `recorder` captures it into `raw`, returning the warps and texts on the
 /// capture's clock.
 ///
 /// A failing step saves a screenshot to `failshot`, aborts capture and ends the recording.
@@ -267,7 +268,7 @@ pub fn capture<P: Platform, R: Recorder>(
             return Err(error);
         }
     }
-    // A bar still showing lasts to the end of the capture.
+    // A text still showing lasts to the end of the capture.
     let marks = timeline.finish(recorder.clock());
     recorder.stop()?;
     Ok(marks)
@@ -285,13 +286,13 @@ fn save_timeline(path: &Path, video: &str, marks: warp::Marks) -> Result<(), App
             length: mark.span.length,
         })
         .collect();
-    let bars = marks
-        .bars
+    let texts = marks
+        .texts
         .into_iter()
-        .map(|bar| warp::BarEntry {
-            text: bar.text,
-            start: bar.start,
-            end: bar.end,
+        .map(|text| warp::TextEntry {
+            text: text.text,
+            start: text.start,
+            end: text.end,
         })
         .collect();
     let zooms = marks
@@ -325,7 +326,7 @@ fn save_timeline(path: &Path, video: &str, marks: warp::Marks) -> Result<(), App
     let file = warp::TimelineFile {
         video: video.to_owned(),
         warps,
-        bars,
+        texts,
         zooms,
         marks: moments,
         keys,
@@ -367,12 +368,15 @@ pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), Ap
     let capture = dir.join(&file.video);
     // Warps shorter than a frame play as normal footage.
     let warps = warp::visible(file.warps.clone(), Duration::from_secs(1) / FPS.get());
-    let states = warp::bar_states(&file, &warps, &layout, warp::end_of(&file));
-    if warps.is_empty() && states.is_empty() && file.zooms.is_empty() {
+    let nothing = file.texts.is_empty() && file.keys.is_empty() && file.zooms.is_empty();
+    if warps.is_empty() && nothing {
         return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
             .map_err(AppError::Render);
     }
     let start = recorder::probe_start("ffprobe", &capture)?;
+    let spans = warp::spans(&warps, start);
+    let elements = scene::elements(&file, &warps, &spans, start, &layout);
+    let frames = scene::frames(&elements, Duration::from_secs(1) / FPS.get());
     // Overlays and the zeroed capture are drawn fresh for each render and go with it.
     let scratch = std::env::temp_dir().join(format!("taperec-render-{}", process::id()));
     fs::create_dir_all(&scratch).map_err(|e| AppError::CreateDir {
@@ -380,40 +384,48 @@ pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), Ap
         detail: e.to_string(),
     })?;
     let rendered = (|| {
-        // One image per state of the bar, joined into one stream by an ffconcat list.
-        let bar_list = if states.is_empty() {
+        let overlays = if frames.is_empty() {
             None
         } else {
-            let mut images = Vec::new();
-            for (index, (_, _, bar)) in states.iter().enumerate() {
-                let name = format!("bar{index}.png");
-                overlay::write_png(&overlay::bar(bar)?, &scratch.join(&name))?;
-                images.push(name);
-            }
-            overlay::write_png(&overlay::gap(), &scratch.join("gap.png"))?;
-            let spans: Vec<(Duration, Duration)> = states
-                .iter()
-                .map(|(from, until, _)| (from.saturating_sub(start), until.saturating_sub(start)))
-                .collect();
-            let list = scratch.join("bar.ffconcat");
-            fs::write(&list, warp::bar_list(&spans, &images, "gap.png")).map_err(|e| {
-                AppError::Overlay(overlay::Error::Write(format!("{}: {e}", list.display())))
-            })?;
-            Some(list)
+            Some(draw_overlays(&frames, &scratch)?)
         };
         let zeroed = scratch.join("zeroed.mp4");
         recorder::encode("ffmpeg", &recorder::remux_args(&capture, &zeroed), &zeroed)
             .map_err(AppError::Render)?;
-        let spans = warp::spans(&warps, start);
         let zooms = warp::zoom_views(&file.zooms, start);
         let graph =
-            warp::filter_graph(&spans, bar_list.is_some(), &zooms, FPS).map_err(AppError::Warp)?;
-        let args = warp::render_args(&zeroed, bar_list.as_deref(), &graph, out);
+            warp::filter_graph(&spans, overlays.is_some(), &zooms, FPS).map_err(AppError::Warp)?;
+        let args = warp::render_args(&zeroed, overlays.as_deref(), &graph, out);
         recorder::encode("ffmpeg", &args, out).map_err(AppError::Render)
     })();
     // Best effort; the render's own result is the one reported.
     let _ = fs::remove_dir_all(&scratch);
     rendered
+}
+
+/// Draws each frame of the overlays into `scratch`, once per distinct look, and returns the ffconcat list
+/// joining them into one stream.
+fn draw_overlays(frames: &[scene::Frame], scratch: &Path) -> Result<PathBuf, AppError> {
+    let mut drawn: HashMap<String, String> = HashMap::new();
+    let mut names = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let key = format!("{:?}", frame.shown);
+        if let Some(name) = drawn.get(&key) {
+            names.push(name.clone());
+            continue;
+        }
+        let name = format!("overlay{}.png", drawn.len());
+        overlay::write_png(&overlay::frame(&frame.shown)?, &scratch.join(&name))?;
+        drawn.insert(key, name.clone());
+        names.push(name);
+    }
+    overlay::write_png(&overlay::gap(), &scratch.join("gap.png"))?;
+    let spans: Vec<(Duration, Duration)> = frames.iter().map(|f| (f.from, f.until)).collect();
+    let list = scratch.join("overlay.ffconcat");
+    fs::write(&list, warp::overlay_list(&spans, &names, "gap.png")).map_err(|e| {
+        AppError::Overlay(overlay::Error::Write(format!("{}: {e}", list.display())))
+    })?;
+    Ok(list)
 }
 
 impl From<overlay::Error> for AppError {
@@ -494,7 +506,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("taperec-save-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let marks = warp::Marks {
-            bars: vec![warp::MarkedBar {
+            texts: vec![warp::MarkedText {
                 start: Duration::from_secs(1),
                 end: Duration::from_secs(2),
                 text: "Part 1".into(),
@@ -535,7 +547,7 @@ mod tests {
             let mut desktop = Desktop::new(platform);
             let raw = Path::new("/out/t.raw.mov");
             let marks = capture(
-                &tape("  - bar: Building\n  - zoom: { point: { x: 400, y: 300 }, scale: 2 }\n  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - zoom: off\n  - sleep: 1s\n"),
+                &tape("  - text: Building\n  - zoom: { point: { x: 400, y: 300 }, scale: 2 }\n  - sleep: 2s\n  - warp: { label: Build, length: 5s, steps: [sleep: 10s] }\n  - zoom: off\n  - sleep: 1s\n"),
                 &mut desktop,
                 &mut recorder,
                 raw,
@@ -571,10 +583,10 @@ mod tests {
                     },
                 ]
             );
-            // The bar shows from the start until the capture ends after the last 1 s.
+            // The text shows from the start until the capture ends after the last 1 s.
             assert_eq!(
-                marks.bars,
-                [warp::MarkedBar {
+                marks.texts,
+                [warp::MarkedText {
                     start: Duration::ZERO,
                     end: Duration::from_secs(13),
                     text: "Building".into(),
