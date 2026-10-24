@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::overlay::{Icon, Run};
 use crate::recorder::{H264, MP4, QUIET};
-use crate::tape::{MarkName, Point, Step};
+use crate::tape::{MarkName, Point, Rect, Step};
 
 /// One warped stretch of the capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +66,8 @@ pub struct Moment {
     pub at: Duration,
     /// Where its target was found, if it had one.
     pub position: Option<Point>,
+    /// The window found under that position, if any.
+    pub window: Option<Rect>,
 }
 
 /// A shortcut pressed while recording, with its keycaps as the platform labels them.
@@ -157,12 +159,19 @@ impl Timeline {
         self.marks.keys.push(MarkedKeys { at, labels });
     }
 
-    /// Names the moment `at`, found at `position` if it had a target.
-    pub fn moment(&mut self, name: &str, at: Duration, position: Option<Point>) {
+    /// Names the moment `at`, found at `position` in `window` if it had a target.
+    pub fn moment(
+        &mut self,
+        name: &str,
+        at: Duration,
+        position: Option<Point>,
+        window: Option<Rect>,
+    ) {
         self.marks.moments.push(Moment {
             name: name.to_owned(),
             at,
             position,
+            window,
         });
     }
 
@@ -170,7 +179,7 @@ impl Timeline {
     #[must_use]
     pub fn finish(mut self, end: Duration) -> Marks {
         self.close_text(end);
-        self.moment(MarkName::END, end, None);
+        self.moment(MarkName::END, end, None, None);
         self.marks
     }
 
@@ -233,6 +242,23 @@ pub struct MarkEntry {
     /// Where its target was found, in screen pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<u32>,
+    /// The window found under that position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowEntry>,
+}
+
+/// A window's frame in a timeline file, in screen pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowEntry {
+    /// Its left edge.
+    pub x: u32,
+    /// Its top edge.
+    pub y: u32,
+    /// Its width.
+    pub w: u32,
+    /// Its height.
+    pub h: u32,
 }
 
 /// One change of view in a timeline file.
@@ -756,12 +782,19 @@ mod tests {
                     at: epoch(1),
                     x: None,
                     y: None,
+                    window: None,
                 },
                 MarkEntry {
                     name: "results".into(),
                     at: epoch(40),
                     x: Some(400),
                     y: Some(300),
+                    window: Some(WindowEntry {
+                        x: 100,
+                        y: 120,
+                        w: 800,
+                        h: 600,
+                    }),
                 },
             ],
             keys: vec![KeyEntry {
@@ -988,6 +1021,7 @@ mod tests {
                 at: secs(100),
                 x: None,
                 y: None,
+                window: None,
             }],
             keys: Vec::new(),
         }

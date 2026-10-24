@@ -24,7 +24,7 @@ use crate::tape::{
     self, de_duration, de_opt_duration, without_defaults, DocPoint, DurationSchema, MarkName, Name,
     ParseError, Step, Tape, Text, Where, ZoomScale,
 };
-use crate::warp::{MarkEntry, TextEntry, TimelineFile, WarpEntry, ZoomEntry, SCREEN};
+use crate::warp::{MarkEntry, TextEntry, TimelineFile, WarpEntry, WindowEntry, ZoomEntry, SCREEN};
 
 /// An edit file: items on tracks, each placed against the recording's marks.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -154,7 +154,7 @@ struct Tracks {
     /// Stretches fast-forwarded, announced and then kept in their corner; they must not overlap.
     #[serde(default)]
     speed: Vec<SpeedItem>,
-    /// Zooms onto a point or a mark's position.
+    /// Zooms onto a point, a mark's position or the window under a mark.
     #[serde(default)]
     zoom: Vec<ZoomItem>,
 }
@@ -201,12 +201,12 @@ struct SpeedItem {
     duration: Option<Duration>,
 }
 
-/// A zoom onto a point or a mark's position, eased in at `from` and out at the end.
+/// A zoom onto a point, a mark's position or the window under a mark, eased in at `from` and out at the end.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(transform = without_defaults)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("allOf" = [
-    { "oneOf": [{ "required": ["at"] }, { "required": ["point"] }] },
+    { "oneOf": [{ "required": ["at"] }, { "required": ["point"] }, { "required": ["window"] }] },
     { "oneOf": [{ "required": ["until"] }, { "required": ["duration"] }] },
 ]))]
 struct ZoomItem {
@@ -218,7 +218,11 @@ struct ZoomItem {
     #[serde(default)]
     #[schemars(with = "DocPoint")]
     point: Option<DocPoint>,
-    /// How far to zoom in, from 1 to 3; 1.5 unless given.
+    /// A mark recorded with a position, whose window the zoom frames with a margin, as far in as fits.
+    #[serde(default)]
+    #[schemars(with = "MarkRef")]
+    window: Option<MarkRef>,
+    /// How far to zoom in, from 1 to 3; 1.5 unless given; the window sets it for `window`.
     #[serde(default)]
     #[schemars(range(min = 1.0, max = 3.0))]
     scale: Option<f64>,
@@ -358,6 +362,9 @@ impl Edit {
             if let Some(MarkRef(mark)) = &zoom.at {
                 refs.push((format!("tracks.zoom[{index}].at"), mark, true));
             }
+            if let Some(MarkRef(mark)) = &zoom.window {
+                refs.push((format!("tracks.zoom[{index}].window"), mark, true));
+            }
         }
         refs
     }
@@ -431,10 +438,21 @@ fn validate(edit: &Edit) -> Result<(), ParseError> {
         }
     }
     for (index, item) in edit.tracks.zoom.iter().enumerate() {
-        if item.at.is_some() == item.point.is_some() {
+        let centres = [
+            item.at.is_some(),
+            item.point.is_some(),
+            item.window.is_some(),
+        ];
+        if centres.iter().filter(|given| **given).count() != 1 {
             return Err(error(
                 format!("tracks.zoom[{index}]"),
-                "a zoom takes exactly one of `at` or `point`",
+                "a zoom takes exactly one of `at`, `point` or `window`",
+            ));
+        }
+        if item.window.is_some() && item.scale.is_some() {
+            return Err(error(
+                format!("tracks.zoom[{index}].scale"),
+                "a `window` zoom takes its scale from the window",
             ));
         }
         if scale(item).is_none() {
@@ -579,22 +597,36 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
         .map(|(zoom, until)| (zoom.at, until, (zoom.x, zoom.y, zoom.percent)))
         .collect();
     for (item, placement) in edit.tracks.zoom.iter().zip(zooms) {
-        let centre = match (&item.at, &item.point) {
-            (Some(MarkRef(name)), _) => {
+        let (centre, percent) = match (&item.at, &item.point, &item.window) {
+            (Some(MarkRef(name)), _, _) => {
                 let path = format!("{}.at", placement.path);
                 let mark = find(marks, name.as_str()).ok_or_else(|| unknown(path.clone(), name))?;
-                mark.x.zip(mark.y).ok_or_else(|| no_position(path, name))?
+                let centre = mark.x.zip(mark.y).ok_or_else(|| no_position(path, name))?;
+                (centre, scale(item).unwrap_or(ZoomScale::DEFAULT).percent())
             }
-            (None, Some(point)) => (point.x, point.y),
+            (None, Some(point), _) => (
+                (point.x, point.y),
+                scale(item).unwrap_or(ZoomScale::DEFAULT).percent(),
+            ),
+            (None, None, Some(MarkRef(name))) => {
+                let path = format!("{}.window", placement.path);
+                let mark = find(marks, name.as_str()).ok_or_else(|| unknown(path.clone(), name))?;
+                let window = mark.window.ok_or_else(|| {
+                    error(
+                        path,
+                        format!("mark `{}` found no window under it", name.as_str()),
+                    )
+                })?;
+                fit(window)
+            }
             // `validate` rules this out.
-            (None, None) => (FULL.0, FULL.1),
+            (None, None, None) => ((FULL.0, FULL.1), 100),
         };
-        let scale = scale(item).unwrap_or(ZoomScale::DEFAULT);
         let (from, until) = place(placement, marks)?;
-        let view = if scale.percent() == 100 {
+        let view = if percent == 100 {
             FULL
         } else {
-            (centre.0, centre.1, scale.percent())
+            (centre.0, centre.1, percent)
         };
         layers.push((from, until, view));
     }
@@ -609,6 +641,25 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
         zooms,
         ..file
     })
+}
+
+/// Space kept around a window a zoom frames, in pixels.
+const WINDOW_MARGIN: u32 = 40;
+
+/// The view framing `window` with [`WINDOW_MARGIN`] around it: its centre, and the zoom in percent as far as
+/// it fits, from 100 to 300.
+fn fit(window: WindowEntry) -> ((u32, u32), u16) {
+    let room = |screen: u32, size: u32| {
+        u64::from(screen) * 100 / u64::from(size + 2 * WINDOW_MARGIN).max(1)
+    };
+    let percent = room(SCREEN.0, window.w)
+        .min(room(SCREEN.1, window.h))
+        .clamp(100, 300);
+    let centre = (
+        window.x.saturating_add(window.w / 2),
+        window.y.saturating_add(window.h / 2),
+    );
+    (centre, u16::try_from(percent).unwrap_or(300))
 }
 
 /// What shows where items lie on top of each other, later over earlier: runs of (start, end, value) in order,
@@ -669,6 +720,7 @@ mod tests {
             at: secs(at),
             x: position.map(|p| p.0),
             y: position.map(|p| p.1),
+            window: None,
         }
     }
 
@@ -777,6 +829,50 @@ mod tests {
             x,
             y,
             percent,
+        }
+    }
+
+    fn window(x: u32, y: u32, w: u32, h: u32) -> WindowEntry {
+        WindowEntry { x, y, w, h }
+    }
+
+    #[test]
+    fn a_window_is_framed_as_far_in_as_it_fits() {
+        // 1920 / (560 + 80) = 3, 1080 / (280 + 80) = 3.
+        assert_eq!(fit(window(680, 400, 560, 280)), ((960, 540), 300));
+        // A small dialog stops at 3×.
+        assert_eq!(fit(window(800, 500, 200, 100)).1, 300);
+        // 1920 / (1200 + 80) = 1.5; 1080 / (600 + 80) = 1.58.
+        assert_eq!(fit(window(100, 200, 1200, 600)), ((700, 500), 150));
+        // A window the screen hardly holds is not zoomed.
+        assert_eq!(fit(window(0, 0, 1920, 1050)).1, 100);
+    }
+
+    #[test]
+    fn a_window_zoom_frames_the_window_under_its_mark() {
+        let mut file = timeline();
+        file.marks[2].window = Some(window(100, 200, 1200, 600));
+        let file = applied(
+            "tracks:\n  zoom:\n    - { window: results, from: results, duration: 10s }\n",
+            file,
+        )
+        .unwrap();
+        assert_eq!(
+            file.zooms,
+            [view(60, 700, 500, 150), view(70, 960, 540, 100)]
+        );
+        let err = applied(
+            "tracks:\n  zoom:\n    - { window: results, from: results, duration: 10s }\n",
+            timeline(),
+        )
+        .unwrap_err();
+        assert_eq!(err.at, Where::Step("tracks.zoom[0].window".into()));
+        assert!(err.message.contains("found no window"), "{err}");
+        for bad in [
+            "tracks:\n  zoom:\n    - { window: results, at: results, from: start, until: end }\n",
+            "tracks:\n  zoom:\n    - { window: results, scale: 2, from: start, until: end }\n",
+        ] {
+            assert!(applied(bad, timeline()).is_err(), "{bad}");
         }
     }
 

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::{CaptureError, Control, Error, Platform, Recorder, Shortcut};
-use crate::tape::{AppName, KeyChord, Point, ShellCommand};
+use crate::tape::{AppName, KeyChord, Point, Rect, ShellCommand};
 
 /// What the player asked the platform to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,8 @@ pub(crate) struct FakePlatform {
     pub(crate) windows: VecDeque<Vec<String>>,
     pub(crate) buttons: VecDeque<Vec<Control>>,
     pub(crate) dock: Vec<(String, Point)>,
+    /// The window every point lies in.
+    pub(crate) window: Option<Rect>,
     pub(crate) focus: VecDeque<bool>,
     pub(crate) shell: VecDeque<bool>,
 }
@@ -98,6 +100,10 @@ impl Platform for FakePlatform {
     fn key(&mut self, chord: &KeyChord) -> Result<(), Error> {
         self.calls.push(Call::Key(format!("{chord:?}")));
         Ok(())
+    }
+
+    fn window_at(&mut self, _at: Point) -> Result<Option<Rect>, Error> {
+        Ok(self.window)
     }
 
     fn shortcut_labels(&self, shortcut: Shortcut<'_>) -> Vec<String> {

@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::tape::{AppName, KeyChord, Point, ShellCommand};
+use crate::tape::{AppName, KeyChord, Point, Rect, ShellCommand};
 
 #[cfg(test)]
 pub(crate) mod fake;
@@ -73,6 +73,13 @@ pub trait Platform {
     ///
     /// Fails if the clipboard or the keystroke fails.
     fn paste(&mut self, text: &str) -> Result<(), Error>;
+
+    /// The topmost window at `at`, if a window is there.
+    ///
+    /// # Errors
+    ///
+    /// A failed query, or an answer that cannot be read.
+    fn window_at(&mut self, at: Point) -> Result<Option<Rect>, Error>;
 
     /// The titles of visible windows.
     ///

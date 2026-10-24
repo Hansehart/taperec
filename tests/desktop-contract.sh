@@ -66,6 +66,13 @@ pointer=$("$helper" pointer)
 "$helper" click
 eventually 5 logged "pressed Open" || fail "the click missed Open"
 
+echo "window-at finds the fixture window around Open"
+IFS=$'\t' read -r wx wy ww wh <<<"$("$helper" window-at "$((x + w / 2))" "$((y + h / 2))")"
+[ -n "${wh:-}" ] || fail "no window under Open"
+holds() { [ "$wx" -le "$x" ] && [ "$wy" -le "$y" ] && [ $((wx + ww)) -ge $((x + w)) ] && [ $((wy + wh)) -ge $((y + h)) ]; }
+holds || fail "window $wx,$wy ${ww}x$wh does not hold Open at $x,$y ${w}x$h"
+[ "$ww" -lt 1920 ] || fail "window-at answered with the whole screen: ${ww}x$wh"
+
 echo "focus brings apps to the front"
 open -a Terminal
 eventually 20 in_front Terminal || fail "Terminal stayed behind"

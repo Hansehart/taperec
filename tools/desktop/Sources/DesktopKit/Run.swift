@@ -62,6 +62,8 @@ func perform(_ command: Command) -> Exit {
         if let chord = Chord("primary+v") { pressChord(chord) }
     case .windows:
         write(formatWindows(windowTitles()), to: .standardOutput)
+    case let .windowAt(x, y):
+        write(formatWindow(windowFrame(atX: x, y: y)), to: .standardOutput)
     case .buttons:
         write(formatButtons(onScreenButtons()), to: .standardOutput)
     case .dock:

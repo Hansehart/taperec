@@ -292,6 +292,7 @@ mod tests {
                 at: secs(100),
                 x: None,
                 y: None,
+                window: None,
             }],
             keys: Vec::new(),
         }

@@ -219,7 +219,7 @@ pub fn capture<P: Platform, R: Recorder>(
 ) -> Result<warp::Marks, AppError> {
     recorder.start(raw)?;
     let mut timeline = warp::Timeline::default();
-    timeline.moment(tape::MarkName::START, recorder.clock(), None);
+    timeline.moment(tape::MarkName::START, recorder.clock(), None, None);
     for step in &tape.steps {
         // Marks share the clock the capture stamps its frames with.
         let at = recorder.clock();
@@ -248,9 +248,13 @@ pub fn capture<P: Platform, R: Recorder>(
                 at: Some(target),
             } => desktop
                 .locate(target, &mut || recorder.check().is_ok())
-                .map(|found| timeline.moment(name.as_str(), recorder.clock(), Some(found))),
+                .map(|found| {
+                    let at = recorder.clock();
+                    let window = desktop.window_at(found);
+                    timeline.moment(name.as_str(), at, Some(found), window);
+                }),
             tape::Step::Mark { name, at: None } => {
-                timeline.moment(name.as_str(), recorder.clock(), None);
+                timeline.moment(name.as_str(), recorder.clock(), None, None);
                 Ok(())
             }
             _ => desktop.play_while(step, &mut || recorder.check().is_ok()),
@@ -313,6 +317,12 @@ fn save_timeline(path: &Path, video: &str, marks: warp::Marks) -> Result<(), App
             at: moment.at,
             x: moment.position.map(|p| p.x),
             y: moment.position.map(|p| p.y),
+            window: moment.window.map(|w| warp::WindowEntry {
+                x: w.x,
+                y: w.y,
+                w: w.width,
+                h: w.height,
+            }),
         })
         .collect();
     let keys = marks
@@ -681,8 +691,17 @@ mod tests {
         }
 
         #[test]
-        fn marks_fall_on_the_capture_clock_with_the_position_found() {
-            let platform = FakePlatform::default();
+        fn marks_fall_on_the_capture_clock_with_the_position_and_window_found() {
+            let window = tape::Rect {
+                x: 100,
+                y: 120,
+                width: 800,
+                height: 600,
+            };
+            let platform = FakePlatform {
+                window: Some(window),
+                ..FakePlatform::default()
+            };
             let mut recorder = platform.recorder();
             let mut desktop = Desktop::new(platform);
             let marks = capture(
@@ -693,18 +712,24 @@ mod tests {
                 None,
             )
             .unwrap();
-            let moment = |name: &str, at, position| warp::Moment {
+            let moment = |name: &str, at, position, window| warp::Moment {
                 name: name.into(),
                 at: Duration::from_secs(at),
                 position,
+                window,
             };
             assert_eq!(
                 marks.moments,
                 [
-                    moment("start", 0, None),
-                    moment("typed", 2, None),
-                    moment("results", 3, Some(tape::Point { x: 400, y: 300 })),
-                    moment("end", 4, None),
+                    moment("start", 0, None, None),
+                    moment("typed", 2, None, None),
+                    moment(
+                        "results",
+                        3,
+                        Some(tape::Point { x: 400, y: 300 }),
+                        Some(window)
+                    ),
+                    moment("end", 4, None, None),
                 ]
             );
         }

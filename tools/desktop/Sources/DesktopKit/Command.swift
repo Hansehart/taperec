@@ -56,6 +56,7 @@ public enum Command: Equatable {
     case type(Character)
     case paste(String)
     case windows
+    case windowAt(x: Int, y: Int)
     case buttons
     case dock
     case focus(String)
@@ -78,6 +79,9 @@ public enum Command: Equatable {
             self = .type(c)
         case "paste" where arguments.count == 2: self = .paste(arguments[1])
         case "windows" where arguments.count == 1: self = .windows
+        case "window-at" where arguments.count == 3:
+            guard let x = Int(arguments[1]), let y = Int(arguments[2]), x >= 0, y >= 0 else { return nil }
+            self = .windowAt(x: x, y: y)
         case "buttons" where arguments.count == 1: self = .buttons
         case "dock" where arguments.count == 1: self = .dock
         case "focus" where arguments.count == 2 && !arguments[1].isEmpty: self = .focus(arguments[1])
@@ -99,5 +103,5 @@ public enum Exit: Int32 {
 /// The usage line for a malformed command.
 public let usage = """
     usage: taperec-desktop pointer | move X Y | click | key CHORD | type CHAR | paste TEXT
-                           | windows | buttons | dock | focus APP | record MOVIE | encoder
+                           | windows | window-at X Y | buttons | dock | focus APP | record MOVIE | encoder
     """
