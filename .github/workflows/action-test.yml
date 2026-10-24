@@ -81,7 +81,7 @@ jobs:
       # The raw capture, timeline and edit file rebuild the video without recording again.
       - name: Re-render from the raw material
         run: |
-          ls taperec/smoke.raw.* taperec/smoke.timeline.yaml taperec/smoke.warp0.png
+          ls taperec/smoke.raw.* taperec/smoke.timeline.yaml
           "$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --edit tests/smoke.edit.yaml --out taperec/rerender.mp4
           tests/verify-video.sh taperec/rerender.mp4
       # An edit naming a mark the recording lacks fails with the item's path.

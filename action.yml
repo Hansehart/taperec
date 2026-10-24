@@ -38,7 +38,7 @@ runs:
       shell: bash
       run: |
         echo "brew=taperec-brew-$RUNNER_OS-$RUNNER_ARCH-$(date +%G-%V)" >> "$GITHUB_OUTPUT"
-        echo "build=taperec-build-$RUNNER_OS-$RUNNER_ARCH-$(cat "$GITHUB_ACTION_PATH"/{Cargo.lock,rust-toolchain.toml,tools/caption.swift} "$GITHUB_ACTION_PATH"/tools/desktop/{Package.swift,Sources/*/*.swift} | shasum -a 256 | cut -c 1-16)" >> "$GITHUB_OUTPUT"
+        echo "build=taperec-build-$RUNNER_OS-$RUNNER_ARCH-$(cat "$GITHUB_ACTION_PATH"/{Cargo.lock,rust-toolchain.toml} "$GITHUB_ACTION_PATH"/tools/desktop/{Package.swift,Sources/*/*.swift} | shasum -a 256 | cut -c 1-16)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/Library/Caches/Homebrew/downloads

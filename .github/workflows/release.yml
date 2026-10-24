@@ -36,8 +36,8 @@ jobs:
             asset=$(asset_name "$VERSION" "$target")
             rm -rf dist && mkdir -p dist
             build_from_source "$PWD" "$target" dist
-            cp LICENSE dist/
-            tar -czf "$asset" -C dist taperec taperec-caption taperec-desktop LICENSE
+            cp LICENSE assets/fonts/LICENSE-inter assets/fonts/LICENSE-lucide dist/
+            tar -czf "$asset" -C dist taperec taperec-desktop LICENSE LICENSE-inter LICENSE-lucide
             shasum -a 256 "$asset" > "$asset.sha256"
           done
 

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::overlay::{Icon, Run};
 use crate::recorder::{H264, MP4, QUIET};
 use crate::tape::{MarkName, Point, Step};
 
@@ -231,8 +232,6 @@ pub struct BarEntry {
     /// When it goes, on the same clock.
     #[serde(with = "epoch_seconds")]
     pub end: Duration,
-    /// The bar image, relative to the timeline file.
-    pub image: String,
 }
 
 /// One warp of a timeline file.
@@ -250,8 +249,6 @@ pub struct WarpEntry {
     /// How long it lasts in the final video, in seconds.
     #[serde(with = "epoch_seconds")]
     pub length: Duration,
-    /// The caption image, relative to the timeline file.
-    pub caption: String,
 }
 
 /// Durations as seconds with a fraction, e.g. `1792258264.258`.
@@ -379,16 +376,19 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// The caption for a warp: its label and how long it really took.
+/// The caption for a warp: a fast-forward icon, its label and how long it really took.
 #[must_use]
-pub fn caption(label: &str, real: Duration) -> String {
+pub fn caption(label: &str, real: Duration) -> Vec<Run> {
     let seconds = real.as_secs();
     let took = match (seconds / 3600, seconds % 3600 / 60) {
         (0, 0) => format!("{seconds} s"),
         (0, minutes) => format!("{minutes} min"),
         (hours, minutes) => format!("{hours} h {minutes} min"),
     };
-    format!("▶▶  {label}  ·  {took}")
+    vec![
+        Run::Icon(Icon::FastForward),
+        Run::Text(format!("  {label}  ·  {took}")),
+    ]
 }
 
 /// The `-filter_complex` graph applying `spans` to input `0:v`, captioning warp `k` with input `k + 1`;
@@ -570,7 +570,6 @@ mod tests {
             start,
             end,
             length: secs(1),
-            caption: "x.warp0.png".into(),
         }
     }
 
@@ -643,13 +642,11 @@ mod tests {
                 start: epoch(10) + Duration::from_millis(250),
                 end: epoch(2100),
                 length: secs(5),
-                caption: "smoke.warp0.png".into(),
             }],
             bars: vec![BarEntry {
                 text: "Part 1 · Docker".into(),
                 start: epoch(5),
                 end: epoch(2200),
-                image: "smoke.bar0.png".into(),
             }],
             zooms: vec![ZoomEntry {
                 at: epoch(30),
@@ -811,24 +808,21 @@ mod tests {
 
     #[test]
     fn timeline_files_reject_unknown_fields_and_negative_times() {
-        let base =
-            "video: a.raw.mov\nwarps:\n  - { label: a, start: 1, end: 2, length: 1, caption: a.png";
+        let base = "video: a.raw.mov\nwarps:\n  - { label: a, start: 1, end: 2, length: 1";
         assert!(serde_saphyr::from_str::<TimelineFile>(&format!("{base}, extra: 1 }}\n")).is_err());
-        let negative = "video: a.raw.mov\nwarps:\n  - { label: a, start: -1, end: 2, length: 1, caption: a.png }\n";
+        let negative = "video: a.raw.mov\nwarps:\n  - { label: a, start: -1, end: 2, length: 1 }\n";
         assert!(serde_saphyr::from_str::<TimelineFile>(negative).is_err());
     }
 
     #[test]
-    fn captions_show_label_and_real_time() {
-        assert_eq!(
-            caption("Building the cage", secs(14 * 60 + 20)),
-            "▶▶  Building the cage  ·  14 min"
-        );
-        assert_eq!(caption("Installing", secs(45)), "▶▶  Installing  ·  45 s");
-        assert_eq!(
-            caption("Pulling", secs(65 * 60)),
-            "▶▶  Pulling  ·  1 h 5 min"
-        );
+    fn captions_show_an_icon_the_label_and_real_time() {
+        let text = |real| match caption("Building the cage", real).as_slice() {
+            [Run::Icon(Icon::FastForward), Run::Text(text)] => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(text(secs(14 * 60 + 20)), "  Building the cage  ·  14 min");
+        assert_eq!(text(secs(45)), "  Building the cage  ·  45 s");
+        assert_eq!(text(secs(65 * 60)), "  Building the cage  ·  1 h 5 min");
     }
 
     #[test]

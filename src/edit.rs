@@ -403,14 +403,13 @@ type View = (u32, u32, u16);
 /// The full screen.
 const FULL: View = (SCREEN.0 / 2, SCREEN.1 / 2, 100);
 
-/// The timeline of `file` with `edit` on top of the tape's own after effects; overlay images are named after
-/// `stem`.
+/// The timeline of `file` with `edit` on top of the tape's own after effects.
 ///
 /// # Errors
 ///
 /// An item naming a mark the recording lacks, ending before it starts, or speeding up a stretch another
 /// speed-up covers, at the item's path.
-pub fn apply(edit: &Edit, file: TimelineFile, stem: &str) -> Result<TimelineFile, ParseError> {
+pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError> {
     validate(edit)?;
     let marks = &file.marks;
     let placements = edit.placements();
@@ -430,13 +429,7 @@ pub fn apply(edit: &Edit, file: TimelineFile, stem: &str) -> Result<TimelineFile
     let bars = layer(&layers)
         .into_iter()
         .filter(|(_, _, text)| !text.is_empty())
-        .enumerate()
-        .map(|(index, (start, end, text))| BarEntry {
-            text,
-            start,
-            end,
-            image: format!("{stem}.bar{index}.png"),
-        })
+        .map(|(start, end, text)| BarEntry { text, start, end })
         .collect();
 
     // Speed-ups side by side, never stacked.
@@ -449,7 +442,6 @@ pub fn apply(edit: &Edit, file: TimelineFile, stem: &str) -> Result<TimelineFile
             start,
             end,
             length: item.length,
-            caption: String::new(),
         };
         warps.push((warp, Some(placement.path.as_str())));
     }
@@ -466,14 +458,7 @@ pub fn apply(edit: &Edit, file: TimelineFile, stem: &str) -> Result<TimelineFile
             "speed-ups must not overlap; end one before the next starts",
         ));
     }
-    let warps = warps
-        .into_iter()
-        .enumerate()
-        .map(|(index, (warp, _))| WarpEntry {
-            caption: format!("{stem}.warp{index}.png"),
-            ..warp
-        })
-        .collect();
+    let warps = warps.into_iter().map(|(warp, _)| warp).collect();
 
     // Zoom: the tape's changes of view become stretches, under the edit's.
     let end = find(marks, MarkName::END).map_or(Duration::MAX, |mark| mark.at);
@@ -595,15 +580,14 @@ mod tests {
     }
 
     fn applied(yaml: &str, file: TimelineFile) -> Result<TimelineFile, ParseError> {
-        apply(&parse(yaml).unwrap(), file, "t")
+        apply(&parse(yaml).unwrap(), file)
     }
 
-    fn bar(text: &str, start: u64, end: u64, index: usize) -> BarEntry {
+    fn bar(text: &str, start: u64, end: u64) -> BarEntry {
         BarEntry {
             text: text.into(),
             start: secs(start),
             end: secs(end),
-            image: format!("t.bar{index}.png"),
         }
     }
 
@@ -632,7 +616,7 @@ mod tests {
     #[test]
     fn a_later_text_lies_on_top_and_an_empty_one_hides_the_bar() {
         let mut file = timeline();
-        file.bars = vec![bar("tape", 0, 100, 0)];
+        file.bars = vec![bar("tape", 0, 100)];
         let file = applied(
             "tracks:\n  text:\n    - { text: edit, from: built, until: results }\n    - { text: '', from: start + 90s, until: end }\n",
             file,
@@ -640,11 +624,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             file.bars,
-            [
-                bar("tape", 0, 40, 0),
-                bar("edit", 40, 60, 1),
-                bar("tape", 60, 90, 2)
-            ]
+            [bar("tape", 0, 40), bar("edit", 40, 60), bar("tape", 60, 90)]
         );
     }
 
@@ -656,7 +636,6 @@ mod tests {
             start: secs(70),
             end: secs(80),
             length: secs(1),
-            caption: "t.warp0.png".into(),
         }];
         let file = applied(
             "tracks:\n  speed:\n    - { label: Building, length: 5s, from: start + 10s, until: built }\n",
@@ -666,15 +645,9 @@ mod tests {
         let warps: Vec<_> = file
             .warps
             .iter()
-            .map(|w| (w.label.as_str(), w.start, w.caption.as_str()))
+            .map(|w| (w.label.as_str(), w.start))
             .collect();
-        assert_eq!(
-            warps,
-            [
-                ("Building", secs(10), "t.warp0.png"),
-                ("tape", secs(70), "t.warp1.png")
-            ]
-        );
+        assert_eq!(warps, [("Building", secs(10)), ("tape", secs(70))]);
 
         let err = applied(
             "tracks:\n  speed:\n    - { label: a, length: 1s, from: start, until: results }\n    - { label: b, length: 1s, from: built, duration: 5s }\n",

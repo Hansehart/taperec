@@ -80,7 +80,8 @@ fetch_binaries() {
         curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$RUNNER_TEMP/$file" "$url/$file"
     done
     verify_sha256 "$RUNNER_TEMP/$asset" "$RUNNER_TEMP/$asset.sha256"
-    tar -xzf "$RUNNER_TEMP/$asset" -C "$bin" taperec taperec-caption taperec-desktop
+    # Whatever the release holds, so an older release brings the tools its binary calls.
+    tar -xzf "$RUNNER_TEMP/$asset" -C "$bin"
 }
 
 # Builds the binaries for a target from the action's own source into a directory.
@@ -91,8 +92,6 @@ build_from_source() {
     cp "$source/target/$target/release/taperec" "$bin/"
     arch=${target%%-*}
     [ "$arch" != aarch64 ] || arch=arm64
-    swiftc -O -target "$arch-apple-macos$(sw_vers -productVersion | cut -d . -f 1)" \
-        "$source/tools/caption.swift" -o "$bin/taperec-caption"
     local desktop=(-c release --package-path "$source/tools/desktop" --arch "$arch")
     swift build "${desktop[@]}"
     cp "$(swift build "${desktop[@]}" --show-bin-path)/taperec-desktop" "$bin/"
