@@ -1,5 +1,4 @@
-//! Overlay images drawn in Rust with bundled fonts, the same on every machine: the bar along the top of the
-//! video and the caption of a warp.
+//! The bar along the top of the video, drawn in Rust with bundled fonts, the same on every machine.
 //!
 //! Text is set in Inter and shaped with `HarfRust`, so it kerns as the font asks; icons come from the Lucide
 //! icon font. Both fonts ship inside the binary.
@@ -23,22 +22,34 @@ const LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide.ttf");
 
 /// The bar's size in pixels: the video's full width.
 const BAR: (u32, u32) = (1920, 64);
-/// Space between the text and the edge of its background, in pixels.
+/// Space between the bar's content and its ends, in pixels.
 const PADDING: f32 = 24.0;
+/// Space between two parts in one slot of the bar, in pixels.
+const PART_GAP: f32 = 32.0;
 /// The bar's text size, in pixels per em.
 const BAR_SIZE: f32 = 28.0;
-/// A caption's text size, in pixels per em.
-const CAPTION_SIZE: f32 = 44.0;
-/// The corner radius of a caption's box, in pixels.
-const CAPTION_RADIUS: f32 = 16.0;
 /// How opaque the black behind the text is.
 const BACKDROP: f32 = 0.6;
+/// A keycap label's size, in pixels per em.
+const KEY_SIZE: f32 = 22.0;
+/// A keycap's height, and its least width, in pixels.
+const KEY_HEIGHT: f32 = 36.0;
+/// Space between a keycap's label and its sides, in pixels.
+const KEY_PADDING: f32 = 10.0;
+/// Space between two keycaps, in pixels.
+const KEY_GAP: f32 = 6.0;
+/// A keycap's corner radius, in pixels.
+const KEY_RADIUS: f32 = 6.0;
+/// How opaque a keycap's white is.
+const KEY_FILL: f32 = 0.18;
 
 /// An icon of the Lucide font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     /// Two triangles pointing right, for a fast-forwarded stretch.
     FastForward,
+    /// A magnifying glass with a plus, for a zoomed view.
+    ZoomIn,
 }
 
 impl Icon {
@@ -46,17 +57,39 @@ impl Icon {
     fn codepoint(self) -> char {
         match self {
             Self::FastForward => '\u{e0bd}',
+            Self::ZoomIn => '\u{e1b6}',
         }
     }
 }
 
-/// A piece of an overlay's line: text, or an icon.
+/// A piece of a part of the bar: text, an icon, or keycaps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Run {
     /// Text set in Inter.
     Text(String),
     /// An icon.
     Icon(Icon),
+    /// One keycap per label, e.g. `⇧`, `⌘`, `P`.
+    Keys(Vec<String>),
+}
+
+/// What the bar shows: the parts in its left, centre and right slots, each part a line of runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bar {
+    /// Parts from the left edge, in order.
+    pub left: Vec<Vec<Run>>,
+    /// Parts in the middle, in order.
+    pub center: Vec<Vec<Run>>,
+    /// Parts up to the right edge, in order.
+    pub right: Vec<Vec<Run>>,
+}
+
+impl Bar {
+    /// Whether the bar shows nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.left.is_empty() && self.center.is_empty() && self.right.is_empty()
+    }
 }
 
 /// An RGBA image, not premultiplied, row by row from the top-left corner.
@@ -112,42 +145,100 @@ fn fonts() -> Result<&'static Fonts, Error> {
         .ok_or(Error::Font("Inter or Lucide"))
 }
 
-/// The bar: `runs` on 60 % black across the video's full width, left-aligned and centred vertically.
+/// The bar: its parts on 60 % black across the video's full width, centred vertically; text too wide for
+/// the bar is cut short with "…".
 ///
 /// # Errors
 ///
 /// A bundled font that cannot be read, or text that cannot be shaped.
-pub fn bar(runs: &[Run]) -> Result<Image, Error> {
-    let line = Line::shape(runs, BAR_SIZE)?;
+pub fn bar(content: &Bar) -> Result<Image, Error> {
+    let mut slots = [
+        content.left.clone(),
+        content.center.clone(),
+        content.right.clone(),
+    ];
+    let mut lines = shape_slots(&slots)?;
+    let room = f32_of(BAR.0) - 2.0 * PADDING;
+    while width_of(&lines) > room {
+        if !shorten_longest_text(&mut slots) {
+            break;
+        }
+        lines = shape_slots(&slots)?;
+    }
     let mut image = Image::new(BAR.0, BAR.1);
     let (width, height) = (f32_of(BAR.0), f32_of(BAR.1));
     image.fill(&rectangle(width, height, 0.0), [0, 0, 0], BACKDROP);
-    let baseline = (height - (line.ascent - line.descent)) / 2.0 + line.ascent;
-    image.fill(&line.glyphs(PADDING, baseline)?, [255, 255, 255], 1.0);
+    let metrics = TextMetrics::at(BAR_SIZE)?;
+    let baseline = (height - (metrics.ascent - metrics.descent)) / 2.0 + metrics.ascent;
+    let [left, center, right] = &lines;
+    let starts = [
+        PADDING,
+        (width - slot_width(center)) / 2.0,
+        width - PADDING - slot_width(right),
+    ];
+    let mut keycaps = Shape::default();
+    let mut glyphs = Shape::default();
+    for (slot, start) in [left, center, right].into_iter().zip(starts) {
+        let mut x = start;
+        for line in slot {
+            keycaps
+                .0
+                .extend(line.keycaps(x, baseline - metrics.cap / 2.0).0);
+            glyphs.0.extend(line.glyphs(x, baseline)?.0);
+            x += line.advance + PART_GAP;
+        }
+    }
+    image.fill(&keycaps, [255, 255, 255], KEY_FILL);
+    image.fill(&glyphs, [255, 255, 255], 1.0);
     Ok(image)
 }
 
-/// A warp caption: `runs` in a rounded box of 60 % black sized to the text.
-///
-/// # Errors
-///
-/// A bundled font that cannot be read, or text that cannot be shaped.
-pub fn caption(runs: &[Run]) -> Result<Image, Error> {
-    let line = Line::shape(runs, CAPTION_SIZE)?;
-    let width = (line.advance + 2.0 * PADDING).ceil();
-    let height = (line.ascent - line.descent + 2.0 * PADDING).ceil();
-    let mut image = Image::new(pixels(width), pixels(height));
-    image.fill(
-        &rectangle(width, height, CAPTION_RADIUS),
-        [0, 0, 0],
-        BACKDROP,
-    );
-    image.fill(
-        &line.glyphs(PADDING, PADDING + line.ascent)?,
-        [255, 255, 255],
-        1.0,
-    );
-    Ok(image)
+/// Each slot's parts, shaped.
+fn shape_slots(slots: &[Vec<Vec<Run>>; 3]) -> Result<[Vec<Line>; 3], Error> {
+    let shape = |parts: &Vec<Vec<Run>>| -> Result<Vec<Line>, Error> {
+        parts.iter().map(|runs| Line::shape(runs)).collect()
+    };
+    Ok([shape(&slots[0])?, shape(&slots[1])?, shape(&slots[2])?])
+}
+
+/// A slot's width: its parts and the gaps between them.
+fn slot_width(lines: &[Line]) -> f32 {
+    let gaps = f32_of(u32::try_from(lines.len().saturating_sub(1)).unwrap_or(u32::MAX));
+    lines.iter().map(|line| line.advance).sum::<f32>() + gaps * PART_GAP
+}
+
+/// The bar's content width: its slots and a gap between each two that show something.
+fn width_of(slots: &[Vec<Line>; 3]) -> f32 {
+    let filled = slots.iter().filter(|slot| !slot.is_empty()).count();
+    let gaps = f32_of(u32::try_from(filled.saturating_sub(1)).unwrap_or(u32::MAX));
+    slots.iter().map(|slot| slot_width(slot)).sum::<f32>() + gaps * PART_GAP
+}
+
+/// Cuts the longest text by one character, ending it in "…"; false when no text is left to cut.
+fn shorten_longest_text(slots: &mut [Vec<Vec<Run>>; 3]) -> bool {
+    let longest = slots
+        .iter_mut()
+        .flatten()
+        .flatten()
+        .filter_map(|run| match run {
+            Run::Text(text) => Some(text),
+            _ => None,
+        })
+        .filter(|text| text.trim_end_matches('…').chars().count() > 1)
+        .max_by_key(|text| text.chars().count());
+    let Some(text) = longest else {
+        return false;
+    };
+    let mut kept: String = text.trim_end_matches('…').to_owned();
+    kept.pop();
+    *text = format!("{}…", kept.trim_end());
+    true
+}
+
+/// The bar's size, fully transparent: what the bar's stream shows while the bar is away.
+#[must_use]
+pub fn gap() -> Image {
+    Image::new(BAR.0, BAR.1)
 }
 
 /// Writes `image` as a PNG to `path`.
@@ -226,6 +317,20 @@ enum Curve {
 #[derive(Debug, Default)]
 struct Shape(Vec<Curve>);
 
+impl Shape {
+    /// Moves every outline by (`dx`, `dy`).
+    fn translate(&mut self, dx: f32, dy: f32) {
+        let shift = |p: &mut Point| *p = point(p.x + dx, p.y + dy);
+        for curve in &mut self.0 {
+            match curve {
+                Curve::Line(a, b) => [a, b].into_iter().for_each(shift),
+                Curve::Quad(a, b, c) => [a, b, c].into_iter().for_each(shift),
+                Curve::Cubic(a, b, c, d) => [a, b, c, d].into_iter().for_each(shift),
+            }
+        }
+    }
+}
+
 /// A `width`×`height` rectangle at the image's top-left corner, its corners rounded by `radius`.
 fn rectangle(width: f32, height: f32, radius: f32) -> Shape {
     // Traced in font coordinates, y up from the image's bottom edge.
@@ -299,81 +404,139 @@ impl PathSink for Path2d {
     }
 }
 
-/// One glyph placed on the line: its font, id and pen position, in pixels from the line's start.
+/// One glyph placed on the line: its font, size, id and pen position, in pixels from the line's start.
 struct Placed {
     font: &'static Font,
+    size: f32,
     glyph: GlyphId,
     x: f32,
     /// How far above the baseline it sits, in pixels; icons are lifted onto the text's middle.
     rise: f32,
 }
 
-/// A shaped line of runs at one size.
-struct Line {
-    placed: Vec<Placed>,
-    size: f32,
-    /// The line's width in pixels.
-    advance: f32,
-    /// The text font's ascent above the baseline, in pixels.
+/// The text font's vertical measures at one size, in pixels.
+struct TextMetrics {
+    /// Ascent above the baseline.
     ascent: f32,
-    /// Its descent below the baseline, in pixels, as a negative value.
+    /// Descent below the baseline, as a negative value.
     descent: f32,
+    /// The height of a capital letter.
+    cap: f32,
 }
 
-impl Line {
-    /// Shapes `runs` at `size` pixels per em: text in Inter with its kerning, icons from Lucide.
-    fn shape(runs: &[Run], size: f32) -> Result<Self, Error> {
-        let fonts = fonts()?;
-        let text = ScalerFont::unhinted(fonts.text.clone(), Some(size));
+impl TextMetrics {
+    fn at(size: f32) -> Result<Self, Error> {
+        let text = ScalerFont::unhinted(fonts()?.text.clone(), Some(size));
         let (ascent, descent) = text
             .metrics()
             .h_line()
             .map_or((size, 0.0), |line| (line.ascender, line.descender));
         let cap = text.metrics().cap_height().unwrap_or(ascent * 0.7);
-        let mut placed = Vec::new();
-        let mut pen = 0.0;
-        for run in runs {
-            let (font, content, rise) = match run {
-                Run::Text(text) => (&fonts.text, text.clone(), 0.0),
-                Run::Icon(icon) => {
-                    let icons = ScalerFont::unhinted(fonts.icons.clone(), Some(size));
-                    // The icon's middle on the middle of a capital letter.
-                    let rise = icon_bounds(&icons, &fonts.icons, *icon)
-                        .map_or(0.0, |(low, high)| cap / 2.0 - f32::midpoint(low, high));
-                    (&fonts.icons, icon.codepoint().to_string(), rise)
-                }
-            };
-            let scale = size / f32::from(font.units_per_em().max(1));
-            let mut buffer = Buffer::new();
-            buffer.push_str(&content);
-            buffer.set_direction(Direction::LeftToRight);
-            buffer.guess_segment_properties();
-            harfrust::shape(&ShaperFont::new(font), &mut buffer, ShapeOptions::new())
-                .map_err(|e| Error::Shape(format!("{e:?}")))?;
-            for (info, position) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
-                placed.push(Placed {
-                    font,
-                    glyph: GlyphId::new(info.glyph_id),
-                    x: pen + units(position.x_offset) * scale,
-                    rise: rise + units(position.y_offset) * scale,
-                });
-                pen += units(position.x_advance) * scale;
-            }
-        }
         Ok(Self {
-            placed,
-            size,
-            advance: pen,
             ascent,
             descent,
+            cap,
         })
+    }
+}
+
+/// A shaped line of runs in the bar's text size.
+struct Line {
+    placed: Vec<Placed>,
+    /// The keycaps' boxes, as (left edge, width) from the line's start.
+    keycaps: Vec<(f32, f32)>,
+    /// The line's width in pixels.
+    advance: f32,
+}
+
+impl Line {
+    /// Shapes `runs`: text in Inter with its kerning, icons from Lucide, keycaps with smaller labels; every
+    /// icon and label sits on the middle of a capital letter.
+    fn shape(runs: &[Run]) -> Result<Self, Error> {
+        let fonts = fonts()?;
+        let cap = TextMetrics::at(BAR_SIZE)?.cap;
+        let mut line = Self {
+            placed: Vec::new(),
+            keycaps: Vec::new(),
+            advance: 0.0,
+        };
+        for run in runs {
+            match run {
+                Run::Text(text) => {
+                    line.advance += line.push(&fonts.text, BAR_SIZE, text, line.advance, 0.0)?;
+                }
+                Run::Icon(icon) => {
+                    let icons = ScalerFont::unhinted(fonts.icons.clone(), Some(BAR_SIZE));
+                    let rise = icon_bounds(&icons, &fonts.icons, *icon)
+                        .map_or(0.0, |(low, high)| cap / 2.0 - f32::midpoint(low, high));
+                    let content = icon.codepoint().to_string();
+                    line.advance +=
+                        line.push(&fonts.icons, BAR_SIZE, &content, line.advance, rise)?;
+                }
+                Run::Keys(labels) => {
+                    let rise = (cap - TextMetrics::at(KEY_SIZE)?.cap) / 2.0;
+                    for (index, label) in labels.iter().enumerate() {
+                        if index > 0 {
+                            line.advance += KEY_GAP;
+                        }
+                        let width = Line::shape_width(&fonts.text, KEY_SIZE, label)?;
+                        let box_width = (width + 2.0 * KEY_PADDING).max(KEY_HEIGHT);
+                        let x = line.advance + (box_width - width) / 2.0;
+                        line.push(&fonts.text, KEY_SIZE, label, x, rise)?;
+                        line.keycaps.push((line.advance, box_width));
+                        line.advance += box_width;
+                    }
+                }
+            }
+        }
+        Ok(line)
+    }
+
+    /// The width `content` takes in `font` at `size`.
+    fn shape_width(font: &'static Font, size: f32, content: &str) -> Result<f32, Error> {
+        let mut scratch = Self {
+            placed: Vec::new(),
+            keycaps: Vec::new(),
+            advance: 0.0,
+        };
+        scratch.push(font, size, content, 0.0, 0.0)
+    }
+
+    /// Places `content` shaped in `font` at `size` from `x`, `rise` above the baseline; returns its width.
+    fn push(
+        &mut self,
+        font: &'static Font,
+        size: f32,
+        content: &str,
+        x: f32,
+        rise: f32,
+    ) -> Result<f32, Error> {
+        let scale = size / f32::from(font.units_per_em().max(1));
+        let mut buffer = Buffer::new();
+        buffer.push_str(content);
+        buffer.set_direction(Direction::LeftToRight);
+        buffer.guess_segment_properties();
+        harfrust::shape(&ShaperFont::new(font), &mut buffer, ShapeOptions::new())
+            .map_err(|e| Error::Shape(format!("{e:?}")))?;
+        let mut pen = 0.0;
+        for (info, position) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
+            self.placed.push(Placed {
+                font,
+                size,
+                glyph: GlyphId::new(info.glyph_id),
+                x: x + pen + units(position.x_offset) * scale,
+                rise: rise + units(position.y_offset) * scale,
+            });
+            pen += units(position.x_advance) * scale;
+        }
+        Ok(pen)
     }
 
     /// The outlines of the line's glyphs, starting at `x` on a baseline at `baseline`, in image pixels.
     fn glyphs(&self, x: f32, baseline: f32) -> Result<Shape, Error> {
         let mut path = Path2d::default();
         for glyph in &self.placed {
-            let scaler = ScalerFont::unhinted(glyph.font.clone(), Some(self.size));
+            let scaler = ScalerFont::unhinted(glyph.font.clone(), Some(glyph.size));
             path.origin = (x + glyph.x, baseline - glyph.rise);
             if let Some(outline) = scaler.outline(glyph.glyph) {
                 outline
@@ -383,6 +546,17 @@ impl Line {
         }
         path.close();
         Ok(path.shape)
+    }
+
+    /// The keycaps' boxes, starting at `x`, centred on the height `middle`, in image pixels.
+    fn keycaps(&self, x: f32, middle: f32) -> Shape {
+        let mut shape = Shape::default();
+        for (left, width) in &self.keycaps {
+            let mut cap = rectangle(*width, KEY_HEIGHT, KEY_RADIUS);
+            cap.translate(x + left, middle - KEY_HEIGHT / 2.0);
+            shape.0.extend(cap.0);
+        }
+        shape
     }
 }
 
@@ -417,17 +591,6 @@ fn f32_of(value: u32) -> f32 {
     value as f32
 }
 
-/// A size in whole pixels, at least one.
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "overlay sizes are small and positive; the cast saturates otherwise"
-)]
-fn pixels(value: f32) -> u32 {
-    (value.ceil() as u32).max(1)
-}
-
 /// A channel value from 0 to 255, rounded.
 #[expect(
     clippy::as_conversions,
@@ -452,6 +615,13 @@ mod tests {
         vec![Run::Text(text.into())]
     }
 
+    fn left(parts: Vec<Vec<Run>>) -> Bar {
+        Bar {
+            left: parts,
+            ..Bar::default()
+        }
+    }
+
     fn pixel(image: &Image, x: u32, y: u32) -> [u8; 4] {
         let at = as_index((y * image.width + x) * 4);
         let mut rgba = [0; 4];
@@ -459,7 +629,7 @@ mod tests {
         rgba
     }
 
-    /// The columns with any bright pixel, as (first, last).
+    /// The columns with a bright pixel, as (first, last).
     fn lit_columns(image: &Image) -> Option<(u32, u32)> {
         let lit: Vec<u32> = (0..image.width)
             .filter(|&x| (0..image.height).any(|y| pixel(image, x, y)[0] > 128))
@@ -469,7 +639,7 @@ mod tests {
 
     #[test]
     fn the_bar_spans_the_video_in_sixty_percent_black() {
-        let image = bar(&text("Part 1 · Docker")).unwrap();
+        let image = bar(&left(vec![text("Part 1 · Docker")])).unwrap();
         assert_eq!((image.width, image.height), BAR);
         assert_eq!(pixel(&image, 1900, 2), [0, 0, 0, 153]);
         let (first, last) = lit_columns(&image).unwrap();
@@ -479,7 +649,7 @@ mod tests {
 
     #[test]
     fn bar_text_sits_in_the_middle() {
-        let image = bar(&text("HHHH")).unwrap();
+        let image = bar(&left(vec![text("HHHH")])).unwrap();
         let rows: Vec<u32> = (0..image.height)
             .filter(|&y| (0..200).any(|x| pixel(&image, x, y)[0] > 128))
             .collect();
@@ -489,43 +659,97 @@ mod tests {
     }
 
     #[test]
-    fn a_caption_grows_with_its_text_and_rounds_its_corners() {
-        let short = caption(&text("Pulling")).unwrap();
-        let long = caption(&text("Building the cage")).unwrap();
+    fn slots_align_left_centre_and_right() {
+        let centre = bar(&Bar {
+            center: vec![text("HHHH")],
+            ..Bar::default()
+        })
+        .unwrap();
+        let (first, last) = lit_columns(&centre).unwrap();
         assert!(
-            long.width > short.width + 100,
-            "{} vs {}",
-            long.width,
-            short.width
+            u32::midpoint(first, last).abs_diff(960) <= 2,
+            "{first}..{last}"
         );
-        assert_eq!(short.height, long.height);
-        // A corner pixel lies outside the rounding; the middle of the left edge inside.
-        assert_eq!(pixel(&short, 0, 0)[3], 0);
-        assert_eq!(pixel(&short, 1, short.height / 2), [0, 0, 0, 153]);
+        let right = bar(&Bar {
+            right: vec![text("HHHH")],
+            ..Bar::default()
+        })
+        .unwrap();
+        let (_, last) = lit_columns(&right).unwrap();
+        assert!((1890..1897).contains(&last), "text ends at {last}");
+    }
+
+    #[test]
+    fn parts_in_a_slot_keep_a_gap() {
+        let one = lit_columns(&bar(&left(vec![text("H")])).unwrap()).unwrap();
+        let two = lit_columns(&bar(&left(vec![text("H"), text("H")])).unwrap()).unwrap();
+        let width = one.1 - one.0;
+        assert!(two.1 - two.0 > 2 * width + 30, "{one:?} {two:?}");
+    }
+
+    #[test]
+    fn keycaps_box_each_label() {
+        let image = bar(&left(vec![vec![Run::Keys(vec![
+            "⇧".into(),
+            "⌘".into(),
+            "P".into(),
+        ])]]))
+        .unwrap();
+        // A keycap's white lifts the black above its label; the bar's ends stay plain.
+        let lifted = |x| pixel(&image, x, 16)[0] > 20;
+        assert!(lifted(30), "{:?}", pixel(&image, 30, 16));
+        assert!(!lifted(5));
+        // Three boxes with two gaps between them: the row crosses plain black twice.
+        let row: Vec<bool> = (24..200).map(lifted).collect();
+        let edges = row.windows(2).filter(|w| w[0] && !w[1]).count();
+        assert_eq!(edges, 3, "{row:?}");
     }
 
     #[test]
     fn kerning_pulls_pairs_together() {
-        let width = |s: &str| Line::shape(&text(s), 100.0).unwrap().advance;
+        let width = |s: &str| Line::shape(&text(s)).unwrap().advance;
         assert!(width("AV") < width("A") + width("V") - 1.0);
     }
 
     #[test]
     fn icons_come_from_lucide() {
         let fonts = fonts().unwrap();
-        assert!(fonts
-            .icons
-            .charmap()
-            .map_unicode(Icon::FastForward.codepoint())
-            .is_some());
-        let with_icon = bar(&[Run::Icon(Icon::FastForward)]).unwrap();
-        let (first, last) = lit_columns(&with_icon).unwrap();
-        assert!(last - first > 14, "the icon spans {first}..{last}");
+        for icon in [Icon::FastForward, Icon::ZoomIn] {
+            assert!(
+                fonts
+                    .icons
+                    .charmap()
+                    .map_unicode(icon.codepoint())
+                    .is_some(),
+                "{icon:?}"
+            );
+            let image = bar(&left(vec![vec![Run::Icon(icon)]])).unwrap();
+            let (first, last) = lit_columns(&image).unwrap();
+            assert!(last - first > 14, "{icon:?} spans {first}..{last}");
+        }
+    }
+
+    #[test]
+    fn text_too_wide_ends_in_an_ellipsis() {
+        let long = "word ".repeat(200);
+        let mut slots = [vec![text(&long)], Vec::new(), vec![text("right")]];
+        let image = bar(&Bar {
+            left: slots[0].clone(),
+            right: slots[2].clone(),
+            ..Bar::default()
+        })
+        .unwrap();
+        let (first, last) = lit_columns(&image).unwrap();
+        assert!(first >= 24 && last <= 1896, "{first}..{last}");
+        assert!(shorten_longest_text(&mut slots));
+        assert_eq!(slots[2], [text("right")]);
+        let mut short = [vec![text("x")], Vec::new(), Vec::new()];
+        assert!(!shorten_longest_text(&mut short));
     }
 
     #[test]
     fn pngs_round_trip() {
-        let image = caption(&text("x")).unwrap();
+        let image = bar(&left(vec![text("x")])).unwrap();
         let path = std::env::temp_dir().join(format!("taperec-overlay-{}.png", std::process::id()));
         write_png(&image, &path).unwrap();
         let decoder = png::Decoder::new(std::io::BufReader::new(File::open(&path).unwrap()));

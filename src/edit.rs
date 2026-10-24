@@ -31,18 +31,69 @@ use crate::warp::{BarEntry, MarkEntry, TimelineFile, WarpEntry, ZoomEntry, SCREE
 #[serde(deny_unknown_fields)]
 #[schemars(title = "taperec edit")]
 pub struct Edit {
+    /// Where the bar shows each part; `{ left: [text], right: [speed, zoom, keys] }` unless given.
+    #[serde(default)]
+    bar: Option<Layout>,
     /// The tracks; within one, a later item lies on top of an earlier one.
+    #[serde(default)]
     tracks: Tracks,
 }
 
+/// Where the bar along the top of the video shows its parts; a part left out never shows.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Layout {
+    /// Parts from the left edge, in order.
+    #[serde(default)]
+    pub left: Vec<Part>,
+    /// Parts in the middle, in order.
+    #[serde(default)]
+    pub center: Vec<Part>,
+    /// Parts up to the right edge, in order.
+    #[serde(default)]
+    pub right: Vec<Part>,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            left: vec![Part::Text],
+            center: Vec::new(),
+            right: vec![Part::Speed, Part::Zoom, Part::Keys],
+        }
+    }
+}
+
+/// What the bar can show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Part {
+    /// The text of the `text` track and the tape's `bar` steps.
+    Text,
+    /// Each shortcut pressed, as keycaps for 1.5 s.
+    Keys,
+    /// A speed-up's label and how long it really took.
+    Speed,
+    /// How far the view is zoomed in.
+    Zoom,
+}
+
+impl Edit {
+    /// Where the bar shows each part.
+    #[must_use]
+    pub fn layout(&self) -> Layout {
+        self.bar.clone().unwrap_or_default()
+    }
+}
+
 /// The tracks of an edit.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Tracks {
     /// Text in the bar along the top of the video; `""` hides the bar.
     #[serde(default)]
     text: Vec<TextItem>,
-    /// Stretches fast-forwarded under a caption; they must not overlap.
+    /// Stretches fast-forwarded, shown in the bar; they must not overlap.
     #[serde(default)]
     speed: Vec<SpeedItem>,
     /// Zooms onto a point or a mark's position.
@@ -305,6 +356,25 @@ pub fn check(edit: &Edit, tape: &Tape) -> Result<(), ParseError> {
 /// The rules an edit keeps whatever the recording: each item ends one way, speed-ups take time, zooms have
 /// one centre and a scale in range.
 fn validate(edit: &Edit) -> Result<(), ParseError> {
+    if let Some(layout) = &edit.bar {
+        let slots = [
+            ("left", &layout.left),
+            ("center", &layout.center),
+            ("right", &layout.right),
+        ];
+        let mut seen = Vec::new();
+        for (slot, parts) in slots {
+            for (index, part) in parts.iter().enumerate() {
+                if seen.contains(part) {
+                    return Err(error(
+                        format!("bar.{slot}[{index}]"),
+                        "each part shows in one place only",
+                    ));
+                }
+                seen.push(*part);
+            }
+        }
+    }
     for placement in edit.placements() {
         if placement.until.is_some() == placement.duration.is_some() {
             return Err(error(
@@ -576,6 +646,7 @@ mod tests {
                 mark("results", 60, Some((400, 300))),
                 mark("end", 100, None),
             ],
+            keys: Vec::new(),
         }
     }
 
@@ -735,6 +806,27 @@ mod tests {
             parse("tracks:\n  sound: []\n").unwrap_err().at,
             Where::Position { line: 2, .. }
         ));
+    }
+
+    #[test]
+    fn the_bar_lays_out_its_parts_once_each() {
+        assert_eq!(parse("tracks: {}\n").unwrap().layout(), Layout::default());
+        let edit = parse("bar: { center: [keys], right: [text] }\n").unwrap();
+        assert_eq!(
+            edit.layout(),
+            Layout {
+                left: Vec::new(),
+                center: vec![Part::Keys],
+                right: vec![Part::Text],
+            }
+        );
+        assert_eq!(apply(&edit, timeline()).map(|f| f.bars.len()), Ok(0));
+        let twice = parse("bar: { left: [text, keys], right: [zoom, keys] }\n").unwrap();
+        assert_eq!(
+            apply(&twice, timeline()).unwrap_err().at,
+            Where::Step("bar.right[1]".into())
+        );
+        assert!(parse("bar: { left: [sound] }\n").is_err());
     }
 
     #[test]

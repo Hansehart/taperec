@@ -10,6 +10,15 @@ use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 pub(crate) mod fake;
 pub mod macos;
 
+/// A shortcut the bar shows: a pressed chord, or the keystroke a paste sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shortcut<'a> {
+    /// A `key` step's chord.
+    Chord(&'a KeyChord),
+    /// A `paste` step's keystroke.
+    Paste,
+}
+
 /// What a desktop must offer to play tapes: input, what is on screen, a shell and a clock.
 ///
 /// Queries take a `limit` bounding one attempt, so the waits built on them keep their deadlines.
@@ -47,6 +56,9 @@ pub trait Platform {
     ///
     /// Fails if the keys cannot be sent.
     fn key(&mut self, chord: &KeyChord) -> Result<(), Error>;
+
+    /// How this platform labels `shortcut`, one keycap each, e.g. `["⌘", "V"]` for a paste on macOS.
+    fn shortcut_labels(&self, shortcut: Shortcut<'_>) -> Vec<String>;
 
     /// Types one character, `\n` and `\t` as Return and Tab.
     ///

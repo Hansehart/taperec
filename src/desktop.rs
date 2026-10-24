@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::motion;
 pub use crate::platform::Error;
-use crate::platform::{pick_control, Platform};
+use crate::platform::{pick_control, Platform, Shortcut};
 use crate::tape::{
     AppName, ControlLabel, DockItem, KeyChord, Point, ShellCommand, Step, Target, WindowName,
 };
@@ -37,6 +37,12 @@ impl<P: Platform> Desktop<P> {
             typing_delay: Duration::from_millis(50),
             move_duration: Duration::from_millis(600),
         }
+    }
+
+    /// How the platform labels `shortcut` in the bar.
+    #[must_use]
+    pub fn shortcut_labels(&self, shortcut: Shortcut<'_>) -> Vec<String> {
+        self.platform.shortcut_labels(shortcut)
     }
 
     /// Consumes the desktop, returning its platform.

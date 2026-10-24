@@ -4,12 +4,13 @@
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::overlay::{Icon, Run};
+use crate::edit::{Layout, Part};
+use crate::overlay::{Bar, Icon, Run};
 use crate::recorder::{H264, MP4, QUIET};
 use crate::tape::{MarkName, Point, Step};
 
@@ -68,6 +69,15 @@ pub struct Moment {
     pub position: Option<Point>,
 }
 
+/// A shortcut pressed while recording, with its keycaps as the platform labels them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedKeys {
+    /// When it was pressed, on the capture's clock.
+    pub at: Duration,
+    /// One label per keycap, e.g. `["⇧", "⌘", "P"]`.
+    pub labels: Vec<String>,
+}
+
 /// The size of the screen taperec records, in pixels.
 pub(crate) const SCREEN: (u32, u32) = (1920, 1080);
 /// How long the view takes to ease from one zoom to the next.
@@ -84,6 +94,8 @@ pub struct Marks {
     pub zooms: Vec<MarkedZoom>,
     /// The named moments, in order, from `start` to `end`.
     pub moments: Vec<Moment>,
+    /// The shortcuts pressed, in order.
+    pub keys: Vec<MarkedKeys>,
 }
 
 /// Collects warps and bar texts as the tape plays.
@@ -141,6 +153,11 @@ impl Timeline {
         });
     }
 
+    /// Notes a shortcut pressed `at`, labelled as the platform shows it.
+    pub fn key(&mut self, labels: Vec<String>, at: Duration) {
+        self.marks.keys.push(MarkedKeys { at, labels });
+    }
+
     /// Names the moment `at`, found at `position` if it had a target.
     pub fn moment(&mut self, name: &str, at: Duration, position: Option<Point>) {
         self.marks.moments.push(Moment {
@@ -186,6 +203,20 @@ pub struct TimelineFile {
     /// The named moments, in order; absent in timelines from before marks.
     #[serde(default)]
     pub marks: Vec<MarkEntry>,
+    /// The shortcuts pressed, in order; absent in timelines from before the bar showed them.
+    #[serde(default)]
+    pub keys: Vec<KeyEntry>,
+}
+
+/// One shortcut in a timeline file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyEntry {
+    /// When it was pressed, in seconds since the Unix epoch, the clock the capture's frames carry.
+    #[serde(with = "epoch_seconds")]
+    pub at: Duration,
+    /// One label per keycap, as the recording platform shows them.
+    pub labels: Vec<String>,
 }
 
 /// One named moment in a timeline file.
@@ -285,19 +316,6 @@ pub fn spans(warps: &[WarpEntry], capture_start: Duration) -> Vec<Span> {
         .collect()
 }
 
-/// Where each bar shows within a capture whose first frame carries `capture_start`, as (from, to).
-#[must_use]
-pub fn bar_spans(bars: &[BarEntry], capture_start: Duration) -> Vec<(Duration, Duration)> {
-    bars.iter()
-        .map(|bar| {
-            (
-                bar.start.saturating_sub(capture_start),
-                bar.end.saturating_sub(capture_start),
-            )
-        })
-        .collect()
-}
-
 /// The changes of view within a capture whose first frame carries `capture_start`.
 #[must_use]
 pub fn zoom_views(zooms: &[ZoomEntry], capture_start: Duration) -> Vec<MarkedZoom> {
@@ -391,33 +409,204 @@ pub fn caption(label: &str, real: Duration) -> Vec<Run> {
     ]
 }
 
-/// The `-filter_complex` graph applying `spans` to input `0:v`, captioning warp `k` with input `k + 1`;
-/// bar `k` shows input `spans.len() + k + 1` along the top during its (from, to). Zooms apply first, then
-/// bars, then warps.
+/// How long a shortcut shows in the bar, unless the next one comes sooner.
+pub const KEY_SHOWN: Duration = Duration::from_millis(1500);
+
+/// What the bar shows over time, on the capture's clock: each (from, until, content), in order, touching
+/// stretches of the same content joined and stretches with nothing to show left out.
+///
+/// The parts come from the resolved texts, the visible warps, the changes of view and the shortcuts, each
+/// shown for [`KEY_SHOWN`] unless pressed within a warp, where it would only flash. Nothing lasts past `end`,
+/// as the overlay would otherwise hold the video's last frame until the bar's stream ends.
+#[must_use]
+pub fn bar_states(
+    timeline: &TimelineFile,
+    warps: &[WarpEntry],
+    layout: &Layout,
+    end: Duration,
+) -> Vec<(Duration, Duration, Bar)> {
+    let mut parts: Vec<(Part, Duration, Duration, Vec<Run>)> = Vec::new();
+    for bar in &timeline.bars {
+        parts.push((
+            Part::Text,
+            bar.start,
+            bar.end,
+            vec![Run::Text(bar.text.clone())],
+        ));
+    }
+    for warp in warps {
+        let real = warp.end.saturating_sub(warp.start);
+        parts.push((
+            Part::Speed,
+            warp.start,
+            warp.end,
+            caption(&warp.label, real),
+        ));
+    }
+    let zooms = &timeline.zooms;
+    let ends = zooms.iter().skip(1).map(|next| next.at).chain([end]);
+    for (zoom, until) in zooms.iter().zip(ends) {
+        if zoom.percent > 100 && zoom.at < until {
+            let runs = vec![
+                Run::Icon(Icon::ZoomIn),
+                Run::Text(format!("  {}×", factor(zoom.percent))),
+            ];
+            parts.push((Part::Zoom, zoom.at, until, runs));
+        }
+    }
+    let shown: Vec<&KeyEntry> = timeline
+        .keys
+        .iter()
+        .filter(|key| !warps.iter().any(|w| w.start <= key.at && key.at < w.end))
+        .collect();
+    let nexts = shown
+        .iter()
+        .skip(1)
+        .map(|next| next.at)
+        .chain([Duration::MAX]);
+    for (key, next) in shown.iter().zip(nexts) {
+        let until = key.at.saturating_add(KEY_SHOWN).min(next);
+        parts.push((
+            Part::Keys,
+            key.at,
+            until,
+            vec![Run::Keys(key.labels.clone())],
+        ));
+    }
+    for part in &mut parts {
+        part.2 = part.2.min(end);
+    }
+    parts.retain(|(_, from, until, _)| from < until);
+
+    let mut cuts: Vec<Duration> = parts
+        .iter()
+        .flat_map(|(_, from, until, _)| [*from, *until])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let slot = |wanted: &[Part], from: Duration, until: Duration| -> Vec<Vec<Run>> {
+        wanted
+            .iter()
+            .filter_map(|part| {
+                parts
+                    .iter()
+                    .find(|(p, start, stop, _)| p == part && *start <= from && until <= *stop)
+                    .map(|(_, _, _, runs)| runs.clone())
+            })
+            .collect()
+    };
+    let mut states: Vec<(Duration, Duration, Bar)> = Vec::new();
+    for (&from, &until) in cuts.iter().zip(cuts.iter().skip(1)) {
+        let bar = Bar {
+            left: slot(&layout.left, from, until),
+            center: slot(&layout.center, from, until),
+            right: slot(&layout.right, from, until),
+        };
+        if bar.is_empty() {
+            continue;
+        }
+        match states.last_mut() {
+            Some((_, stop, last)) if *stop == from && *last == bar => *stop = until,
+            _ => states.push((from, until, bar)),
+        }
+    }
+    states
+}
+
+/// When the recording ended: its `end` mark, else the latest moment the timeline names.
+#[must_use]
+pub fn end_of(timeline: &TimelineFile) -> Duration {
+    if let Some(end) = timeline
+        .marks
+        .iter()
+        .find(|mark| mark.name == MarkName::END)
+    {
+        return end.at;
+    }
+    let times = timeline
+        .warps
+        .iter()
+        .map(|warp| warp.end)
+        .chain(timeline.bars.iter().map(|bar| bar.end))
+        .chain(timeline.zooms.iter().map(|zoom| zoom.at))
+        .chain(timeline.marks.iter().map(|mark| mark.at))
+        .chain(
+            timeline
+                .keys
+                .iter()
+                .map(|key| key.at.saturating_add(KEY_SHOWN)),
+        );
+    times.max().unwrap_or_default()
+}
+
+/// A zoom in percent as a factor without trailing zeros, e.g. `150` as `1.5` and `200` as `2`.
+fn factor(percent: u16) -> String {
+    let fraction = format!("{:02}", percent % 100);
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.is_empty() {
+        format!("{}", percent / 100)
+    } else {
+        format!("{}.{fraction}", percent / 100)
+    }
+}
+
+/// An ffconcat list showing `images[k]` during `spans[k]` and `gap` before, between and after them, so the
+/// bar enters the graph as a single stream; times in the video, rounded to milliseconds.
+#[must_use]
+pub fn bar_list(spans: &[(Duration, Duration)], images: &[String], gap: &str) -> String {
+    let millis =
+        |t: Duration| Duration::from_millis(u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
+    // Writing to a `String` always succeeds.
+    let mut list = "ffconcat version 1.0\n".to_owned();
+    let mut cursor = Duration::ZERO;
+    for ((from, until), image) in spans.iter().zip(images) {
+        let (from, until) = (millis(*from), millis(*until));
+        if from > cursor {
+            let _ = writeln!(
+                list,
+                "file {gap}\nduration {}",
+                seconds(from.saturating_sub(cursor))
+            );
+        }
+        if until > from {
+            let _ = writeln!(
+                list,
+                "file {image}\nduration {}",
+                seconds(until.saturating_sub(from))
+            );
+            cursor = until;
+        }
+    }
+    let _ = writeln!(list, "file {gap}");
+    list
+}
+
+/// The `-filter_complex` graph applying `spans` to input `0:v`, with the bar's stream from input `1:v` laid
+/// over the top when `bar` holds. Zooms apply first, then the bar, then warps.
 ///
 /// # Errors
 ///
 /// [`Error::BadSpans`] for overlapping or unordered spans.
 pub fn filter_graph(
     spans: &[Span],
-    bars: &[(Duration, Duration)],
+    bar: bool,
     zooms: &[MarkedZoom],
     fps: NonZeroU32,
 ) -> Result<String, Error> {
     // Segments in output order.
-    let mut segments: Vec<Segment> = Vec::new();
+    let mut segments: Vec<String> = Vec::new();
     let mut cursor = Duration::ZERO;
-    for (caption, span) in (1..).zip(spans) {
+    for span in spans {
         if span.start < cursor || span.end <= span.start {
             return Err(Error::BadSpans);
         }
         if span.start > cursor {
-            segments.push(Segment::Normal(normal(cursor, Some(span.start))));
+            segments.push(normal(cursor, Some(span.start)));
         }
-        segments.push(Segment::Warped(warped(span), caption));
+        segments.push(warped(span));
         cursor = span.end;
     }
-    segments.push(Segment::Normal(normal(cursor, None)));
+    segments.push(normal(cursor, None));
 
     let count = segments.len();
     // Writing to a `String` always succeeds.
@@ -429,44 +618,23 @@ pub fn filter_graph(
         "z".clone_into(&mut source);
     }
     // The bar goes into the footage first, so a warp speeds it up with everything else.
-    for (k, (from, to)) in bars.iter().enumerate() {
-        let image = spans.len() + k + 1;
-        let _ = write!(
-            graph,
-            "[{source}][{image}:v]overlay=x=0:y=0:enable='between(t,{},{})'[b{k}];",
-            seconds(*from),
-            seconds(*to)
-        );
-        source = format!("b{k}");
+    if bar {
+        let _ = write!(graph, "[{source}][1:v]overlay=x=0:y=0[b];");
+        "b".clone_into(&mut source);
     }
     let _ = write!(graph, "[{source}]split={count}");
     for i in 0..count {
         let _ = write!(graph, "[i{i}]");
     }
     graph.push(';');
-    for (i, segment) in segments.iter().enumerate() {
-        let _ = match segment {
-            Segment::Normal(chain) => write!(graph, "[i{i}]{chain}[v{i}];"),
-            // `overlay` holds the caption's single frame for the whole segment.
-            Segment::Warped(chain, caption) => write!(
-                graph,
-                "[i{i}]{chain}[w{i}];[w{i}][{caption}:v]overlay=x=(W-w)/2:y=H-h-140[v{i}];"
-            ),
-        };
+    for (i, chain) in segments.iter().enumerate() {
+        let _ = write!(graph, "[i{i}]{chain}[v{i}];");
     }
     for i in 0..count {
         let _ = write!(graph, "[v{i}]");
     }
     let _ = write!(graph, "concat=n={count}:v=1:a=0,fps={fps}[out]");
     Ok(graph)
-}
-
-/// One piece of the output, cut from the capture.
-enum Segment {
-    /// Played at real speed.
-    Normal(String),
-    /// Sped up under the caption from the given input index.
-    Warped(String, usize),
 }
 
 /// A segment played at real speed; `end: None` runs to the end of the capture.
@@ -502,13 +670,17 @@ fn seconds(duration: Duration) -> String {
     format!("{}.{:03}", millis / 1000, millis % 1000)
 }
 
-/// ffmpeg arguments rendering `capture` and its image inputs (warp captions, then bars) through `graph` into
-/// `out`.
+/// ffmpeg arguments rendering `capture`, and the bar's ffconcat list if any, through `graph` into `out`.
 #[must_use]
-pub fn render_args(capture: &Path, captions: &[PathBuf], graph: &str, out: &Path) -> Vec<OsString> {
-    let inputs = std::iter::once(capture)
-        .chain(captions.iter().map(PathBuf::as_path))
-        .flat_map(|path| [OsString::from("-i"), path.as_os_str().to_owned()]);
+pub fn render_args(capture: &Path, bar: Option<&Path>, graph: &str, out: &Path) -> Vec<OsString> {
+    let capture = [OsString::from("-i"), capture.as_os_str().to_owned()];
+    let bar = bar.into_iter().flat_map(|list| {
+        ["-f", "concat", "-i"]
+            .map(OsString::from)
+            .into_iter()
+            .chain([list.as_os_str().to_owned()])
+    });
+    let inputs = capture.into_iter().chain(bar);
     QUIET
         .map(OsString::from)
         .into_iter()
@@ -537,7 +709,7 @@ mod tests {
     }
 
     fn graph(spans: &[Span]) -> Result<String, Error> {
-        filter_graph(spans, &[], &[], NonZeroU32::new(30).unwrap())
+        filter_graph(spans, false, &[], NonZeroU32::new(30).unwrap())
     }
 
     #[test]
@@ -668,6 +840,10 @@ mod tests {
                     y: Some(300),
                 },
             ],
+            keys: vec![KeyEntry {
+                at: epoch(41),
+                labels: vec!["⇧".into(), "⌘".into(), "P".into()],
+            }],
         };
         let yaml = serde_saphyr::to_string(&file).unwrap();
         assert_eq!(
@@ -706,23 +882,13 @@ mod tests {
     }
 
     #[test]
-    fn bars_go_into_the_footage_before_the_warps() {
-        let g = filter_graph(
-            &[span(2, 602, 5)],
-            &[(secs(1), secs(4)), (secs(4), secs(700))],
-            &[],
-            NonZeroU32::new(30).unwrap(),
-        )
-        .unwrap();
+    fn the_bar_goes_into_the_footage_before_the_warps() {
+        let g = filter_graph(&[span(2, 602, 5)], true, &[], NonZeroU32::new(30).unwrap()).unwrap();
         assert!(
-            g.starts_with(
-                "[0:v][2:v]overlay=x=0:y=0:enable='between(t,1.000,4.000)'[b0];\
-                 [b0][3:v]overlay=x=0:y=0:enable='between(t,4.000,700.000)'[b1];\
-                 [b1]split=3[i0][i1][i2];"
-            ),
+            g.starts_with("[0:v][1:v]overlay=x=0:y=0[b];[b]split=3[i0][i1][i2];"),
             "{g}"
         );
-        assert!(g.contains("[w1][1:v]overlay=x=(W-w)/2"), "{g}");
+        assert!(!g.contains("[w1]"), "{g}");
     }
 
     fn view(at: u64, x: u32, y: u32, percent: u16) -> MarkedZoom {
@@ -770,14 +936,14 @@ mod tests {
     fn zoom_goes_first_then_bars_then_warps() {
         let g = filter_graph(
             &[span(2, 602, 5)],
-            &[(secs(1), secs(4))],
+            true,
             &[view(1, 960, 540, 150)],
             NonZeroU32::new(30).unwrap(),
         )
         .unwrap();
         assert!(g.starts_with("[0:v]fps=30,zoompan="), "{g}");
-        assert!(g.contains("[z][2:v]overlay=x=0:y=0:enable="), "{g}");
-        assert!(g.contains("[b0]split=3[i0][i1][i2];"), "{g}");
+        assert!(g.contains("[z][1:v]overlay=x=0:y=0[b];"), "{g}");
+        assert!(g.contains("[b]split=3[i0][i1][i2];"), "{g}");
     }
 
     #[test]
@@ -791,17 +957,11 @@ mod tests {
 
     #[test]
     fn bars_alone_need_no_warp() {
-        let g = filter_graph(
-            &[],
-            &[(secs(0), secs(3))],
-            &[],
-            NonZeroU32::new(30).unwrap(),
-        )
-        .unwrap();
+        let g = filter_graph(&[], true, &[], NonZeroU32::new(30).unwrap()).unwrap();
         assert_eq!(
             g,
-            "[0:v][1:v]overlay=x=0:y=0:enable='between(t,0.000,3.000)'[b0];\
-             [b0]split=1[i0];[i0]trim=start=0.000,setpts=PTS-STARTPTS[v0];\
+            "[0:v][1:v]overlay=x=0:y=0[b];\
+             [b]split=1[i0];[i0]trim=start=0.000,setpts=PTS-STARTPTS[v0];\
              [v0]concat=n=1:v=1:a=0,fps=30[out]"
         );
     }
@@ -826,27 +986,24 @@ mod tests {
     }
 
     #[test]
-    fn warps_a_middle_stretch_under_its_caption() {
+    fn warps_a_middle_stretch() {
         assert_eq!(
             graph(&[span(2, 602, 5)]).unwrap(),
             "[0:v]split=3[i0][i1][i2];\
              [i0]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS[v0];\
-             [i1]trim=start=2.000:end=602.000,setpts=(PTS-STARTPTS)*5000/600000[w1];\
-             [w1][1:v]overlay=x=(W-w)/2:y=H-h-140[v1];\
+             [i1]trim=start=2.000:end=602.000,setpts=(PTS-STARTPTS)*5000/600000[v1];\
              [i2]trim=start=602.000,setpts=PTS-STARTPTS[v2];\
              [v0][v1][v2]concat=n=3:v=1:a=0,fps=30[out]"
         );
     }
 
     #[test]
-    fn each_warp_overlays_its_own_caption_input() {
+    fn back_to_back_warps_need_no_normal_segment_between() {
         let g = graph(&[span(0, 10, 2), span(10, 20, 2)]).unwrap();
         assert!(
             g.starts_with("[0:v]split=3[i0][i1][i2];[i0]trim=start=0.000:end=10.000,"),
             "{g}"
         );
-        assert!(g.contains("[w0][1:v]overlay="), "{g}");
-        assert!(g.contains("[w1][2:v]overlay="), "{g}");
         assert!(
             g.ends_with("[v0][v1][v2]concat=n=3:v=1:a=0,fps=30[out]"),
             "{g}"
@@ -857,7 +1014,7 @@ mod tests {
     fn short_warps_keep_real_speed() {
         let g = graph(&[span(1, 3, 5)]).unwrap();
         assert!(
-            g.contains("[i1]trim=start=1.000:end=3.000,setpts=PTS-STARTPTS[w1];"),
+            g.contains("[i1]trim=start=1.000:end=3.000,setpts=PTS-STARTPTS[v1];"),
             "{g}"
         );
     }
@@ -871,12 +1028,194 @@ mod tests {
         );
     }
 
+    fn keys(at: u64, label: &str) -> KeyEntry {
+        KeyEntry {
+            at: secs(at),
+            labels: vec![label.into()],
+        }
+    }
+
+    /// A timeline from 0 s to 100 s with a text from 0 s to 50 s.
+    fn bar_timeline() -> TimelineFile {
+        TimelineFile {
+            video: "t.raw.mkv".into(),
+            warps: Vec::new(),
+            bars: vec![BarEntry {
+                text: "Part 1".into(),
+                start: secs(0),
+                end: secs(50),
+            }],
+            zooms: Vec::new(),
+            marks: vec![MarkEntry {
+                name: "end".into(),
+                at: secs(100),
+                x: None,
+                y: None,
+            }],
+            keys: Vec::new(),
+        }
+    }
+
+    fn states(file: &TimelineFile, layout: &Layout) -> Vec<(Duration, Duration, Bar)> {
+        bar_states(file, &file.warps, layout, end_of(file))
+    }
+
+    fn text_bar(text: &str) -> Bar {
+        Bar {
+            left: vec![vec![Run::Text(text.into())]],
+            ..Bar::default()
+        }
+    }
+
+    #[test]
+    fn shortcuts_show_for_a_moment_unless_the_next_comes_sooner() {
+        let mut file = bar_timeline();
+        file.keys = vec![keys(10, "a"), keys(11, "b"), keys(60, "c")];
+        let ms = Duration::from_millis;
+        let spans: Vec<(Duration, Duration, Vec<Vec<Run>>)> = states(&file, &Layout::default())
+            .into_iter()
+            .map(|(from, until, bar)| (from, until, bar.right))
+            .collect();
+        let key = |label: &str| vec![vec![Run::Keys(vec![label.into()])]];
+        assert_eq!(
+            spans,
+            [
+                (secs(0), secs(10), Vec::new()),
+                (secs(10), secs(11), key("a")),
+                (secs(11), ms(12_500), key("b")),
+                (ms(12_500), secs(50), Vec::new()),
+                (secs(60), ms(61_500), key("c")),
+            ]
+        );
+    }
+
+    #[test]
+    fn speed_and_zoom_show_while_they_last_and_keys_skip_warps() {
+        let mut file = bar_timeline();
+        file.bars.clear();
+        file.warps = vec![WarpEntry {
+            label: "Building".into(),
+            start: secs(20),
+            end: secs(80),
+            length: secs(5),
+        }];
+        file.zooms = vec![
+            ZoomEntry {
+                at: secs(30),
+                x: 1,
+                y: 1,
+                percent: 175,
+            },
+            ZoomEntry {
+                at: secs(40),
+                x: 960,
+                y: 540,
+                percent: 100,
+            },
+        ];
+        file.keys = vec![keys(25, "x")];
+        let got = states(&file, &Layout::default());
+        let speed = caption("Building", secs(60));
+        let zoom = vec![Run::Icon(Icon::ZoomIn), Run::Text("  1.75×".into())];
+        let right = |parts: Vec<Vec<Run>>| Bar {
+            right: parts,
+            ..Bar::default()
+        };
+        assert_eq!(
+            got,
+            [
+                (secs(20), secs(30), right(vec![speed.clone()])),
+                (secs(30), secs(40), right(vec![speed.clone(), zoom])),
+                (secs(40), secs(80), right(vec![speed])),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_layout_places_parts_and_leaves_out_the_rest() {
+        let mut file = bar_timeline();
+        file.keys = vec![keys(10, "a")];
+        let layout = Layout {
+            left: Vec::new(),
+            center: vec![Part::Text],
+            right: Vec::new(),
+        };
+        let got = states(&file, &layout);
+        assert_eq!(
+            got,
+            [(
+                secs(0),
+                secs(50),
+                Bar {
+                    center: vec![vec![Run::Text("Part 1".into())]],
+                    ..Bar::default()
+                }
+            )]
+        );
+        assert_eq!(
+            states(&bar_timeline(), &Layout::default()),
+            [(secs(0), secs(50), text_bar("Part 1"))]
+        );
+    }
+
+    #[test]
+    fn nothing_outlasts_the_recording() {
+        let mut file = bar_timeline();
+        file.bars.clear();
+        file.keys = vec![keys(99, "a"), keys(101, "b")];
+        let got: Vec<(Duration, Duration)> = states(&file, &Layout::default())
+            .into_iter()
+            .map(|(from, until, _)| (from, until))
+            .collect();
+        assert_eq!(got, [(secs(99), secs(100))]);
+    }
+
+    #[test]
+    fn zoom_factors_drop_trailing_zeros() {
+        assert_eq!(factor(150), "1.5");
+        assert_eq!(factor(175), "1.75");
+        assert_eq!(factor(200), "2");
+        assert_eq!(factor(305), "3.05");
+    }
+
+    #[test]
+    fn the_bar_list_fills_gaps_and_ends_on_one() {
+        let ms = Duration::from_millis;
+        let list = bar_list(
+            &[
+                (ms(1500), ms(4000)),
+                (ms(4000), ms(9250)),
+                (ms(12_000), ms(13_000)),
+            ],
+            &["bar0.png".into(), "bar1.png".into(), "bar2.png".into()],
+            "gap.png",
+        );
+        assert_eq!(
+            list,
+            "ffconcat version 1.0\n\
+             file gap.png\nduration 1.500\n\
+             file bar0.png\nduration 2.500\n\
+             file bar1.png\nduration 5.250\n\
+             file gap.png\nduration 2.750\n\
+             file bar2.png\nduration 1.000\n\
+             file gap.png\n"
+        );
+    }
+
+    #[test]
+    fn the_end_is_the_end_mark_or_the_latest_moment() {
+        let mut file = bar_timeline();
+        assert_eq!(end_of(&file), secs(100));
+        file.marks.clear();
+        file.keys = vec![keys(70, "a")];
+        assert_eq!(end_of(&file), Duration::from_millis(71_500));
+    }
+
     #[test]
     fn renders_with_the_capture_settings() {
-        let captions = [PathBuf::from("/o/c0.png"), PathBuf::from("/o/c1.png")];
         let args: Vec<String> = render_args(
             Path::new("/o/.x.capture.mp4"),
-            &captions,
+            Some(Path::new("/o/bar.ffconcat")),
             "G",
             Path::new("/o/x.mp4"),
         )
@@ -886,7 +1225,7 @@ mod tests {
         #[rustfmt::skip]
         let expected = [
             "-hide_banner", "-loglevel", "error", "-y",
-            "-i", "/o/.x.capture.mp4", "-i", "/o/c0.png", "-i", "/o/c1.png",
+            "-i", "/o/.x.capture.mp4", "-f", "concat", "-i", "/o/bar.ffconcat",
             "-filter_complex", "G", "-map", "[out]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use super::{CaptureError, Control, Error, Platform, Recorder};
+use super::{CaptureError, Control, Error, Platform, Recorder, Shortcut};
 use crate::tape::{AppName, KeyChord, Point, ShellCommand};
 
 /// What the player asked the platform to do.
@@ -98,6 +98,13 @@ impl Platform for FakePlatform {
     fn key(&mut self, chord: &KeyChord) -> Result<(), Error> {
         self.calls.push(Call::Key(format!("{chord:?}")));
         Ok(())
+    }
+
+    fn shortcut_labels(&self, shortcut: Shortcut<'_>) -> Vec<String> {
+        match shortcut {
+            Shortcut::Chord(chord) => chord.to_string().split('+').map(str::to_owned).collect(),
+            Shortcut::Paste => vec!["paste".to_owned()],
+        }
     }
 
     fn type_char(&mut self, c: char) -> Result<(), Error> {
