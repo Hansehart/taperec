@@ -105,33 +105,37 @@ jobs:
           last=$(sed -n 's/.*YAVG=//p' taperec/zoom-diff.txt | tail -1)
           echo "zoom difference: at most $most, last frame $last"
           awk -v m="$most" -v l="$last" 'BEGIN { exit !(m > 10 && l < 2) }' || { echo "::error::the zoom is missing or never ends"; exit 1; }
-      # The bar darkens the top strip while it shows and is gone once the tape hides it.
-      - name: Check the bar
+      # The tape's first text settles top left, below the menu bar, and is gone once the tape hides it.
+      - name: Check the text
         run: |
-          luma() { ffmpeg -v error "$@" -i taperec/smoke.mp4 -frames:v 1 -vf "crop=1:1:600:30,format=gray" -f rawvideo - | od -An -tu1 | tr -d ' '; }
-          # Some seconds in: the first step, and so the bar, can follow the capture's first frame by a second.
-          shown=$(luma -ss 3)
+          luma() {
+            ffmpeg -v error "$@" -i taperec/smoke.mp4 -frames:v 1 \
+              -vf "crop=120:8:40:46,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - |
+              sed -n 's/.*YAVG=//p' | head -n 1
+          }
+          # Announced for 1.2 s and settled 0.5 s later, a few seconds in.
+          shown=$(luma -ss 4)
           hidden=$(luma -sseof -0.5)
-          echo "bar strip luma: $shown while shown, $hidden once hidden"
-          # The strip is 60 % black, so it keeps at most 40 % of what lies beneath; 60 % leaves room for encoding.
-          [ $((shown * 10)) -lt $((hidden * 6)) ] || { echo "::error::the bar is missing or never hides"; exit 1; }
-      # The speed-up shows at the bar's right end: half a second into it, its label lights the strip there.
-      - name: Check the speed-up in the bar
+          echo "top-left luma: $shown with the text settled, $hidden once hidden"
+          awk -v a="$shown" -v b="$hidden" 'BEGIN { exit !(a < b * 0.6) }' || { echo "::error::the text is missing or never hides"; exit 1; }
+      # The speed-up announces itself in the centre: its card darkens what lies behind, above its label.
+      - name: Check the speed-up
         run: |
           probe=$(ffprobe -v error -show_entries format=start_time:format_tags=com.taperec.start -of default=nw=1 taperec/smoke.raw.*)
           start=$(sed -n 's/^TAG:com.taperec.start=//p' <<<"$probe")
           start=${start:-$(sed -n 's/^start_time=//p' <<<"$probe")}
           waiting=$(sed -n '/name: waiting/,/at:/s/.*at: //p' taperec/smoke.timeline.yaml)
           at=$(awk -v w="$waiting" -v s="$start" 'BEGIN { printf "%.3f", w - s + 0.5 }')
+          before=$(awk -v w="$waiting" -v s="$start" 'BEGIN { printf "%.3f", w - s - 0.3 }')
           luma() {
             ffmpeg -v error -ss "$1" -i taperec/smoke.mp4 -frames:v 1 \
-              -vf "crop=300:30:1590:17,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - |
+              -vf "crop=300:8:810:504,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - |
               sed -n 's/.*YAVG=//p' | head -n 1
           }
-          sped=$(luma "$at")
-          plain=$(luma 3)
-          echo "bar's right end luma: $sped at ${at}s in the speed-up, $plain with the text alone"
-          awk -v a="$sped" -v b="$plain" 'BEGIN { exit !(a > b + 10) }' || { echo "::error::the speed-up is missing from the bar"; exit 1; }
+          announced=$(luma "$at")
+          plain=$(luma "$before")
+          echo "centre luma: $announced at ${at}s in the speed-up, $plain just before"
+          awk -v a="$announced" -v b="$plain" 'BEGIN { exit !(a < b * 0.6) }' || { echo "::error::the speed-up is not announced"; exit 1; }
       # `auto` picks ScreenCaptureKit with a hardware encoder, ffmpeg without one.
       - name: Show the recorder auto chose
         run: |

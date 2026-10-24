@@ -1,5 +1,5 @@
-//! After effects marked while recording and drawn when rendering: time warps, stretches of a capture
-//! fast-forwarded under a caption, and the bar, text shown along the top of the video.
+//! After effects marked while recording and applied when rendering: time warps, stretches of a capture
+//! fast-forwarded, and zooms, plus the ffmpeg graph laying the overlays over the result.
 
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::{Layout, Part};
-use crate::overlay::{Bar, Icon, Run};
+use crate::overlay::{Icon, Run};
 use crate::recorder::{H264, MP4, QUIET};
 use crate::tape::{MarkName, Point, Step};
 
@@ -34,14 +33,14 @@ pub struct Marked {
     pub label: String,
 }
 
-/// A stretch of the capture showing text in the bar, timed on the capture's clock.
+/// A stretch of the capture showing a text, timed on the capture's clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarkedBar {
+pub struct MarkedText {
     /// When the text appears.
     pub start: Duration,
     /// When it goes.
     pub end: Duration,
-    /// What the bar shows.
+    /// What it says.
     pub text: String,
 }
 
@@ -88,8 +87,8 @@ const ZOOM_EASE: Duration = Duration::from_millis(400);
 pub struct Marks {
     /// The finished warps, in order.
     pub warps: Vec<Marked>,
-    /// The bar's texts, in order.
-    pub bars: Vec<MarkedBar>,
+    /// The texts, in order.
+    pub texts: Vec<MarkedText>,
     /// The changes of view, in order.
     pub zooms: Vec<MarkedZoom>,
     /// The named moments, in order, from `start` to `end`.
@@ -98,11 +97,11 @@ pub struct Marks {
     pub keys: Vec<MarkedKeys>,
 }
 
-/// Collects warps and bar texts as the tape plays.
+/// Collects warps, texts, zooms, marks and shortcuts as the tape plays.
 #[derive(Debug, Default)]
 pub struct Timeline {
     open: Option<(Duration, Duration, String)>,
-    bar: Option<(Duration, String)>,
+    text: Option<(Duration, String)>,
     marks: Marks,
 }
 
@@ -126,10 +125,10 @@ impl Timeline {
                     });
                 }
             }
-            Step::Bar(text) => {
-                self.close_bar(at);
+            Step::Text(text) => {
+                self.close_text(at);
                 if !text.is_empty() {
-                    self.bar = Some((at, text.clone()));
+                    self.text = Some((at, text.clone()));
                 }
             }
             _ => {}
@@ -167,17 +166,17 @@ impl Timeline {
         });
     }
 
-    /// The marks, with a bar still showing at `end` ending there.
+    /// The marks, with a text still showing at `end` ending there.
     #[must_use]
     pub fn finish(mut self, end: Duration) -> Marks {
-        self.close_bar(end);
+        self.close_text(end);
         self.moment(MarkName::END, end, None);
         self.marks
     }
 
-    fn close_bar(&mut self, at: Duration) {
-        if let Some((start, text)) = self.bar.take() {
-            self.marks.bars.push(MarkedBar {
+    fn close_text(&mut self, at: Duration) {
+        if let Some((start, text)) = self.text.take() {
+            self.marks.texts.push(MarkedText {
                 start,
                 end: at,
                 text,
@@ -194,16 +193,16 @@ pub struct TimelineFile {
     pub video: String,
     /// The warps, in order.
     pub warps: Vec<WarpEntry>,
-    /// The bar's texts, in order; absent in timelines from before the bar.
+    /// The texts, in order.
     #[serde(default)]
-    pub bars: Vec<BarEntry>,
+    pub texts: Vec<TextEntry>,
     /// The changes of view, in order; absent in timelines from before zoom.
     #[serde(default)]
     pub zooms: Vec<ZoomEntry>,
     /// The named moments, in order; absent in timelines from before marks.
     #[serde(default)]
     pub marks: Vec<MarkEntry>,
-    /// The shortcuts pressed, in order; absent in timelines from before the bar showed them.
+    /// The shortcuts pressed, in order.
     #[serde(default)]
     pub keys: Vec<KeyEntry>,
 }
@@ -251,11 +250,11 @@ pub struct ZoomEntry {
     pub percent: u16,
 }
 
-/// One stretch of bar text in a timeline file.
+/// One stretch of text in a timeline file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BarEntry {
-    /// What the bar shows.
+pub struct TextEntry {
+    /// What it says.
     pub text: String,
     /// When the text appears, in seconds since the Unix epoch, the clock the capture's frames carry.
     #[serde(with = "epoch_seconds")]
@@ -409,108 +408,28 @@ pub fn caption(label: &str, real: Duration) -> Vec<Run> {
     ]
 }
 
-/// How long a shortcut shows in the bar, unless the next one comes sooner.
+/// How long a shortcut shows after its last press.
 pub const KEY_SHOWN: Duration = Duration::from_millis(1500);
 
-/// What the bar shows over time, on the capture's clock: each (from, until, content), in order, touching
-/// stretches of the same content joined and stretches with nothing to show left out.
-///
-/// The parts come from the resolved texts, the visible warps, the changes of view and the shortcuts, each
-/// shown for [`KEY_SHOWN`] unless pressed within a warp, where it would only flash. Nothing lasts past `end`,
-/// as the overlay would otherwise hold the video's last frame until the bar's stream ends.
+/// Where capture time `t` lands in the video once `spans` are fast-forwarded.
 #[must_use]
-pub fn bar_states(
-    timeline: &TimelineFile,
-    warps: &[WarpEntry],
-    layout: &Layout,
-    end: Duration,
-) -> Vec<(Duration, Duration, Bar)> {
-    let mut parts: Vec<(Part, Duration, Duration, Vec<Run>)> = Vec::new();
-    for bar in &timeline.bars {
-        parts.push((
-            Part::Text,
-            bar.start,
-            bar.end,
-            vec![Run::Text(bar.text.clone())],
-        ));
-    }
-    for warp in warps {
-        let real = warp.end.saturating_sub(warp.start);
-        parts.push((
-            Part::Speed,
-            warp.start,
-            warp.end,
-            caption(&warp.label, real),
-        ));
-    }
-    let zooms = &timeline.zooms;
-    let ends = zooms.iter().skip(1).map(|next| next.at).chain([end]);
-    for (zoom, until) in zooms.iter().zip(ends) {
-        if zoom.percent > 100 && zoom.at < until {
-            let runs = vec![
-                Run::Icon(Icon::ZoomIn),
-                Run::Text(format!("  {}×", factor(zoom.percent))),
-            ];
-            parts.push((Part::Zoom, zoom.at, until, runs));
+pub fn output_time(t: Duration, spans: &[Span]) -> Duration {
+    let mut removed = Duration::ZERO;
+    for span in spans {
+        let real = span.end.saturating_sub(span.start);
+        let shown = span.length.min(real);
+        if t >= span.end {
+            removed += real.saturating_sub(shown);
+        } else if t > span.start {
+            let into = t.saturating_sub(span.start);
+            let scaled = into.as_nanos() * shown.as_nanos() / real.as_nanos().max(1);
+            let scaled = Duration::from_nanos(u64::try_from(scaled).unwrap_or(u64::MAX));
+            return span.start.saturating_sub(removed) + scaled;
+        } else {
+            break;
         }
     }
-    let shown: Vec<&KeyEntry> = timeline
-        .keys
-        .iter()
-        .filter(|key| !warps.iter().any(|w| w.start <= key.at && key.at < w.end))
-        .collect();
-    let nexts = shown
-        .iter()
-        .skip(1)
-        .map(|next| next.at)
-        .chain([Duration::MAX]);
-    for (key, next) in shown.iter().zip(nexts) {
-        let until = key.at.saturating_add(KEY_SHOWN).min(next);
-        parts.push((
-            Part::Keys,
-            key.at,
-            until,
-            vec![Run::Keys(key.labels.clone())],
-        ));
-    }
-    for part in &mut parts {
-        part.2 = part.2.min(end);
-    }
-    parts.retain(|(_, from, until, _)| from < until);
-
-    let mut cuts: Vec<Duration> = parts
-        .iter()
-        .flat_map(|(_, from, until, _)| [*from, *until])
-        .collect();
-    cuts.sort_unstable();
-    cuts.dedup();
-    let slot = |wanted: &[Part], from: Duration, until: Duration| -> Vec<Vec<Run>> {
-        wanted
-            .iter()
-            .filter_map(|part| {
-                parts
-                    .iter()
-                    .find(|(p, start, stop, _)| p == part && *start <= from && until <= *stop)
-                    .map(|(_, _, _, runs)| runs.clone())
-            })
-            .collect()
-    };
-    let mut states: Vec<(Duration, Duration, Bar)> = Vec::new();
-    for (&from, &until) in cuts.iter().zip(cuts.iter().skip(1)) {
-        let bar = Bar {
-            left: slot(&layout.left, from, until),
-            center: slot(&layout.center, from, until),
-            right: slot(&layout.right, from, until),
-        };
-        if bar.is_empty() {
-            continue;
-        }
-        match states.last_mut() {
-            Some((_, stop, last)) if *stop == from && *last == bar => *stop = until,
-            _ => states.push((from, until, bar)),
-        }
-    }
-    states
+    t.saturating_sub(removed)
 }
 
 /// When the recording ended: its `end` mark, else the latest moment the timeline names.
@@ -527,7 +446,7 @@ pub fn end_of(timeline: &TimelineFile) -> Duration {
         .warps
         .iter()
         .map(|warp| warp.end)
-        .chain(timeline.bars.iter().map(|bar| bar.end))
+        .chain(timeline.texts.iter().map(|text| text.end))
         .chain(timeline.zooms.iter().map(|zoom| zoom.at))
         .chain(timeline.marks.iter().map(|mark| mark.at))
         .chain(
@@ -540,7 +459,7 @@ pub fn end_of(timeline: &TimelineFile) -> Duration {
 }
 
 /// A zoom in percent as a factor without trailing zeros, e.g. `150` as `1.5` and `200` as `2`.
-fn factor(percent: u16) -> String {
+pub(crate) fn factor(percent: u16) -> String {
     let fraction = format!("{:02}", percent % 100);
     let fraction = fraction.trim_end_matches('0');
     if fraction.is_empty() {
@@ -551,9 +470,9 @@ fn factor(percent: u16) -> String {
 }
 
 /// An ffconcat list showing `images[k]` during `spans[k]` and `gap` before, between and after them, so the
-/// bar enters the graph as a single stream; times in the video, rounded to milliseconds.
+/// overlays enter the graph as a single stream; times in the video, rounded to milliseconds.
 #[must_use]
-pub fn bar_list(spans: &[(Duration, Duration)], images: &[String], gap: &str) -> String {
+pub fn overlay_list(spans: &[(Duration, Duration)], images: &[String], gap: &str) -> String {
     let millis =
         |t: Duration| Duration::from_millis(u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
     // Writing to a `String` always succeeds.
@@ -581,15 +500,16 @@ pub fn bar_list(spans: &[(Duration, Duration)], images: &[String], gap: &str) ->
     list
 }
 
-/// The `-filter_complex` graph applying `spans` to input `0:v`, with the bar's stream from input `1:v` laid
-/// over the top when `bar` holds. Zooms apply first, then the bar, then warps.
+/// The `-filter_complex` graph applying `spans` to input `0:v`, with the overlays' stream from input `1:v`
+/// laid over the result when `overlay` holds. Zooms apply first, then warps, then the overlays, so their
+/// timing is the video's own.
 ///
 /// # Errors
 ///
 /// [`Error::BadSpans`] for overlapping or unordered spans.
 pub fn filter_graph(
     spans: &[Span],
-    bar: bool,
+    overlay: bool,
     zooms: &[MarkedZoom],
     fps: NonZeroU32,
 ) -> Result<String, Error> {
@@ -612,15 +532,10 @@ pub fn filter_graph(
     // Writing to a `String` always succeeds.
     let mut graph = String::new();
     let mut source = "0:v".to_owned();
-    // Zoom first, so the bar on top stays still and full width.
+    // Zoom first; the overlays go on last, still and in the video's own time.
     if !zooms.is_empty() {
         let _ = write!(graph, "[0:v]{}[z];", zoom_chain(zooms, fps));
         "z".clone_into(&mut source);
-    }
-    // The bar goes into the footage first, so a warp speeds it up with everything else.
-    if bar {
-        let _ = write!(graph, "[{source}][1:v]overlay=x=0:y=0[b];");
-        "b".clone_into(&mut source);
     }
     let _ = write!(graph, "[{source}]split={count}");
     for i in 0..count {
@@ -633,7 +548,11 @@ pub fn filter_graph(
     for i in 0..count {
         let _ = write!(graph, "[v{i}]");
     }
-    let _ = write!(graph, "concat=n={count}:v=1:a=0,fps={fps}[out]");
+    let _ = write!(graph, "concat=n={count}:v=1:a=0,fps={fps}");
+    if overlay {
+        let _ = write!(graph, "[c];[c][1:v]overlay=x=0:y=0");
+    }
+    graph.push_str("[out]");
     Ok(graph)
 }
 
@@ -670,17 +589,22 @@ fn seconds(duration: Duration) -> String {
     format!("{}.{:03}", millis / 1000, millis % 1000)
 }
 
-/// ffmpeg arguments rendering `capture`, and the bar's ffconcat list if any, through `graph` into `out`.
+/// ffmpeg arguments rendering `capture`, and the overlays' ffconcat list if any, through `graph` into `out`.
 #[must_use]
-pub fn render_args(capture: &Path, bar: Option<&Path>, graph: &str, out: &Path) -> Vec<OsString> {
+pub fn render_args(
+    capture: &Path,
+    overlay: Option<&Path>,
+    graph: &str,
+    out: &Path,
+) -> Vec<OsString> {
     let capture = [OsString::from("-i"), capture.as_os_str().to_owned()];
-    let bar = bar.into_iter().flat_map(|list| {
+    let overlay = overlay.into_iter().flat_map(|list| {
         ["-f", "concat", "-i"]
             .map(OsString::from)
             .into_iter()
             .chain([list.as_os_str().to_owned()])
     });
-    let inputs = capture.into_iter().chain(bar);
+    let inputs = capture.into_iter().chain(overlay);
     QUIET
         .map(OsString::from)
         .into_iter()
@@ -815,7 +739,7 @@ mod tests {
                 end: epoch(2100),
                 length: secs(5),
             }],
-            bars: vec![BarEntry {
+            texts: vec![TextEntry {
                 text: "Part 1 · Docker".into(),
                 start: epoch(5),
                 end: epoch(2200),
@@ -857,38 +781,56 @@ mod tests {
     fn timeline_files_from_before_the_bar_still_read() {
         let old = "video: a.raw.mkv\nwarps: []\n";
         let file = serde_saphyr::from_str::<TimelineFile>(old).unwrap();
-        assert_eq!(file.bars, []);
+        assert_eq!(file.texts, []);
     }
 
     #[test]
     fn timeline_times_bar_texts_until_the_next_or_the_end() {
         let tape = crate::tape::parse(
-            "output: t.mp4\nsteps:\n  - bar: one\n  - sleep: 1s\n  - bar: two\n  - bar: \"\"\n  - bar: three\n",
+            "output: t.mp4\nsteps:\n  - text: one\n  - sleep: 1s\n  - text: two\n  - text: \"\"\n  - text: three\n",
         )
         .unwrap();
         let mut timeline = Timeline::default();
         for (step, at) in tape.steps.iter().zip([1, 2, 5, 9, 12]) {
             timeline.mark(step, secs(at));
         }
-        let bar = |start, end, text: &str| MarkedBar {
+        let shown = |start, end, text: &str| MarkedText {
             start: secs(start),
             end: secs(end),
             text: text.into(),
         };
         assert_eq!(
-            timeline.finish(secs(20)).bars,
-            [bar(1, 5, "one"), bar(5, 9, "two"), bar(12, 20, "three")]
+            timeline.finish(secs(20)).texts,
+            [
+                shown(1, 5, "one"),
+                shown(5, 9, "two"),
+                shown(12, 20, "three")
+            ]
         );
     }
 
     #[test]
-    fn the_bar_goes_into_the_footage_before_the_warps() {
+    fn the_overlays_lie_over_the_warped_video() {
         let g = filter_graph(&[span(2, 602, 5)], true, &[], NonZeroU32::new(30).unwrap()).unwrap();
+        assert!(g.starts_with("[0:v]split=3[i0][i1][i2];"), "{g}");
         assert!(
-            g.starts_with("[0:v][1:v]overlay=x=0:y=0[b];[b]split=3[i0][i1][i2];"),
+            g.ends_with("concat=n=3:v=1:a=0,fps=30[c];[c][1:v]overlay=x=0:y=0[out]"),
             "{g}"
         );
-        assert!(!g.contains("[w1]"), "{g}");
+    }
+
+    #[test]
+    fn output_time_follows_each_warp() {
+        let ms = Duration::from_millis;
+        // 10 s to 70 s play in 6 s; 80 s to 81 s is shorter than its length and plays as it is.
+        let spans = [span(10, 70, 6), span(80, 81, 5)];
+        assert_eq!(output_time(secs(5), &spans), secs(5));
+        assert_eq!(output_time(secs(10), &spans), secs(10));
+        assert_eq!(output_time(secs(40), &spans), secs(13));
+        assert_eq!(output_time(ms(70_000), &spans), secs(16));
+        assert_eq!(output_time(secs(75), &spans), secs(21));
+        assert_eq!(output_time(ms(80_500), &spans), ms(26_500));
+        assert_eq!(output_time(secs(90), &spans), secs(36));
     }
 
     fn view(at: u64, x: u32, y: u32, percent: u16) -> MarkedZoom {
@@ -933,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn zoom_goes_first_then_bars_then_warps() {
+    fn zoom_goes_first_then_warps_then_overlays() {
         let g = filter_graph(
             &[span(2, 602, 5)],
             true,
@@ -942,13 +884,13 @@ mod tests {
         )
         .unwrap();
         assert!(g.starts_with("[0:v]fps=30,zoompan="), "{g}");
-        assert!(g.contains("[z][1:v]overlay=x=0:y=0[b];"), "{g}");
-        assert!(g.contains("[b]split=3[i0][i1][i2];"), "{g}");
+        assert!(g.contains("[z]split=3[i0][i1][i2];"), "{g}");
+        assert!(g.ends_with("[c][1:v]overlay=x=0:y=0[out]"), "{g}");
     }
 
     #[test]
     fn timeline_files_from_before_zoom_still_read() {
-        let old = "video: a.raw.mkv\nwarps: []\nbars: []\n";
+        let old = "video: a.raw.mkv\nwarps: []\ntexts: []\n";
         assert_eq!(
             serde_saphyr::from_str::<TimelineFile>(old).unwrap().zooms,
             []
@@ -956,13 +898,12 @@ mod tests {
     }
 
     #[test]
-    fn bars_alone_need_no_warp() {
+    fn overlays_alone_need_no_warp() {
         let g = filter_graph(&[], true, &[], NonZeroU32::new(30).unwrap()).unwrap();
         assert_eq!(
             g,
-            "[0:v][1:v]overlay=x=0:y=0[b];\
-             [b]split=1[i0];[i0]trim=start=0.000,setpts=PTS-STARTPTS[v0];\
-             [v0]concat=n=1:v=1:a=0,fps=30[out]"
+            "[0:v]split=1[i0];[i0]trim=start=0.000,setpts=PTS-STARTPTS[v0];\
+             [v0]concat=n=1:v=1:a=0,fps=30[c];[c][1:v]overlay=x=0:y=0[out]"
         );
     }
 
@@ -1035,16 +976,12 @@ mod tests {
         }
     }
 
-    /// A timeline from 0 s to 100 s with a text from 0 s to 50 s.
-    fn bar_timeline() -> TimelineFile {
+    /// A timeline ending at 100 s.
+    fn ending_timeline() -> TimelineFile {
         TimelineFile {
             video: "t.raw.mkv".into(),
             warps: Vec::new(),
-            bars: vec![BarEntry {
-                text: "Part 1".into(),
-                start: secs(0),
-                end: secs(50),
-            }],
+            texts: Vec::new(),
             zooms: Vec::new(),
             marks: vec![MarkEntry {
                 name: "end".into(),
@@ -1056,120 +993,6 @@ mod tests {
         }
     }
 
-    fn states(file: &TimelineFile, layout: &Layout) -> Vec<(Duration, Duration, Bar)> {
-        bar_states(file, &file.warps, layout, end_of(file))
-    }
-
-    fn text_bar(text: &str) -> Bar {
-        Bar {
-            left: vec![vec![Run::Text(text.into())]],
-            ..Bar::default()
-        }
-    }
-
-    #[test]
-    fn shortcuts_show_for_a_moment_unless_the_next_comes_sooner() {
-        let mut file = bar_timeline();
-        file.keys = vec![keys(10, "a"), keys(11, "b"), keys(60, "c")];
-        let ms = Duration::from_millis;
-        let spans: Vec<(Duration, Duration, Vec<Vec<Run>>)> = states(&file, &Layout::default())
-            .into_iter()
-            .map(|(from, until, bar)| (from, until, bar.right))
-            .collect();
-        let key = |label: &str| vec![vec![Run::Keys(vec![label.into()])]];
-        assert_eq!(
-            spans,
-            [
-                (secs(0), secs(10), Vec::new()),
-                (secs(10), secs(11), key("a")),
-                (secs(11), ms(12_500), key("b")),
-                (ms(12_500), secs(50), Vec::new()),
-                (secs(60), ms(61_500), key("c")),
-            ]
-        );
-    }
-
-    #[test]
-    fn speed_and_zoom_show_while_they_last_and_keys_skip_warps() {
-        let mut file = bar_timeline();
-        file.bars.clear();
-        file.warps = vec![WarpEntry {
-            label: "Building".into(),
-            start: secs(20),
-            end: secs(80),
-            length: secs(5),
-        }];
-        file.zooms = vec![
-            ZoomEntry {
-                at: secs(30),
-                x: 1,
-                y: 1,
-                percent: 175,
-            },
-            ZoomEntry {
-                at: secs(40),
-                x: 960,
-                y: 540,
-                percent: 100,
-            },
-        ];
-        file.keys = vec![keys(25, "x")];
-        let got = states(&file, &Layout::default());
-        let speed = caption("Building", secs(60));
-        let zoom = vec![Run::Icon(Icon::ZoomIn), Run::Text("  1.75×".into())];
-        let right = |parts: Vec<Vec<Run>>| Bar {
-            right: parts,
-            ..Bar::default()
-        };
-        assert_eq!(
-            got,
-            [
-                (secs(20), secs(30), right(vec![speed.clone()])),
-                (secs(30), secs(40), right(vec![speed.clone(), zoom])),
-                (secs(40), secs(80), right(vec![speed])),
-            ]
-        );
-    }
-
-    #[test]
-    fn the_layout_places_parts_and_leaves_out_the_rest() {
-        let mut file = bar_timeline();
-        file.keys = vec![keys(10, "a")];
-        let layout = Layout {
-            left: Vec::new(),
-            center: vec![Part::Text],
-            right: Vec::new(),
-        };
-        let got = states(&file, &layout);
-        assert_eq!(
-            got,
-            [(
-                secs(0),
-                secs(50),
-                Bar {
-                    center: vec![vec![Run::Text("Part 1".into())]],
-                    ..Bar::default()
-                }
-            )]
-        );
-        assert_eq!(
-            states(&bar_timeline(), &Layout::default()),
-            [(secs(0), secs(50), text_bar("Part 1"))]
-        );
-    }
-
-    #[test]
-    fn nothing_outlasts_the_recording() {
-        let mut file = bar_timeline();
-        file.bars.clear();
-        file.keys = vec![keys(99, "a"), keys(101, "b")];
-        let got: Vec<(Duration, Duration)> = states(&file, &Layout::default())
-            .into_iter()
-            .map(|(from, until, _)| (from, until))
-            .collect();
-        assert_eq!(got, [(secs(99), secs(100))]);
-    }
-
     #[test]
     fn zoom_factors_drop_trailing_zeros() {
         assert_eq!(factor(150), "1.5");
@@ -1179,9 +1002,9 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_list_fills_gaps_and_ends_on_one() {
+    fn the_overlay_list_fills_gaps_and_ends_on_one() {
         let ms = Duration::from_millis;
-        let list = bar_list(
+        let list = overlay_list(
             &[
                 (ms(1500), ms(4000)),
                 (ms(4000), ms(9250)),
@@ -1204,7 +1027,7 @@ mod tests {
 
     #[test]
     fn the_end_is_the_end_mark_or_the_latest_moment() {
-        let mut file = bar_timeline();
+        let mut file = ending_timeline();
         assert_eq!(end_of(&file), secs(100));
         file.marks.clear();
         file.keys = vec![keys(70, "a")];
@@ -1215,7 +1038,7 @@ mod tests {
     fn renders_with_the_capture_settings() {
         let args: Vec<String> = render_args(
             Path::new("/o/.x.capture.mp4"),
-            Some(Path::new("/o/bar.ffconcat")),
+            Some(Path::new("/o/overlay.ffconcat")),
             "G",
             Path::new("/o/x.mp4"),
         )
@@ -1225,7 +1048,7 @@ mod tests {
         #[rustfmt::skip]
         let expected = [
             "-hide_banner", "-loglevel", "error", "-y",
-            "-i", "/o/.x.capture.mp4", "-f", "concat", "-i", "/o/bar.ffconcat",
+            "-i", "/o/.x.capture.mp4", "-f", "concat", "-i", "/o/overlay.ffconcat",
             "-filter_complex", "G", "-map", "[out]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",

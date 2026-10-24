@@ -39,7 +39,7 @@ impl<P: Platform> Desktop<P> {
         }
     }
 
-    /// How the platform labels `shortcut` in the bar.
+    /// How the platform labels `shortcut` on its keycaps.
     #[must_use]
     pub fn shortcut_labels(&self, shortcut: Shortcut<'_>) -> Vec<String> {
         self.platform.shortcut_labels(shortcut)
@@ -80,7 +80,7 @@ impl<P: Platform> Desktop<P> {
             // Warps, bars, zooms and marks mark the recording; the caller times them.
             Step::Warp { .. }
             | Step::EndWarp
-            | Step::Bar(_)
+            | Step::Text(_)
             | Step::Zoom(_)
             | Step::Mark { .. } => {}
             Step::Type(text) => self.type_text(text)?,

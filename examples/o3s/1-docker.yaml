@@ -3,7 +3,7 @@
 output: o3s-1-docker.mp4
 steps:
   - set: { moveDuration: 700ms }
-  - bar: "1/3 · Install Docker Desktop"
+  - text: "1/3 · Install Docker Desktop"
   - sleep: 1s
   # Every click is zoomed in on, then out once its result shows.
   - zoom: { dock: Terminal }

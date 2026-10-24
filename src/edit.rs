@@ -11,7 +11,7 @@
 //! ```
 //!
 //! Items in a track may overlap: a later item lies on top of an earlier one, as stacked layers do. Speed-ups
-//! are the exception, as a fast-forward cannot nest. The tape's own `bar`, `warp` and `zoom` steps form the
+//! are the exception, as a fast-forward cannot nest. The tape's own `text`, `warp` and `zoom` steps form the
 //! bottom layer.
 
 use std::borrow::Cow;
@@ -21,68 +21,126 @@ use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::Deserialize;
 
 use crate::tape::{
-    self, de_duration, de_opt_duration, without_defaults, BarText, DocPoint, DurationSchema,
-    MarkName, Name, ParseError, Step, Tape, Where, ZoomScale,
+    self, de_duration, de_opt_duration, without_defaults, DocPoint, DurationSchema, MarkName, Name,
+    ParseError, Step, Tape, Text, Where, ZoomScale,
 };
-use crate::warp::{BarEntry, MarkEntry, TimelineFile, WarpEntry, ZoomEntry, SCREEN};
+use crate::warp::{MarkEntry, TextEntry, TimelineFile, WarpEntry, ZoomEntry, SCREEN};
 
 /// An edit file: items on tracks, each placed against the recording's marks.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "taperec edit")]
 pub struct Edit {
-    /// Where the bar shows each part; `{ left: [text], right: [speed, zoom, keys] }` unless given.
+    /// Where each kind of overlay settles after its announcement in the centre; `{ text: top-left, effects:
+    /// top-right, keys: bottom }` unless given.
     #[serde(default)]
-    bar: Option<Layout>,
+    layout: Layout,
     /// The tracks; within one, a later item lies on top of an earlier one.
     #[serde(default)]
     tracks: Tracks,
 }
 
-/// Where the bar along the top of the video shows its parts; a part left out never shows.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// Where each kind of overlay settles; the centre is where texts and effects announce themselves first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct Layout {
-    /// Parts from the left edge, in order.
-    #[serde(default)]
-    pub left: Vec<Part>,
-    /// Parts in the middle, in order.
-    #[serde(default)]
-    pub center: Vec<Part>,
-    /// Parts up to the right edge, in order.
-    #[serde(default)]
-    pub right: Vec<Part>,
+    /// The texts: where we are.
+    pub text: Position,
+    /// The running speed-ups and zooms: what is happening.
+    pub effects: Position,
+    /// The shortcuts, shown on press and never announced.
+    pub keys: Position,
 }
 
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            left: vec![Part::Text],
-            center: Vec::new(),
-            right: vec![Part::Speed, Part::Zoom, Part::Keys],
+            text: Position::TopLeft,
+            effects: Position::TopRight,
+            keys: Position::Bottom,
         }
     }
 }
 
-/// What the bar can show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Part {
-    /// The text of the `text` track and the tape's `bar` steps.
-    Text,
-    /// Each shortcut pressed, as keycaps for 1.5 s.
-    Keys,
-    /// A speed-up's label and how long it really took.
-    Speed,
-    /// How far the view is zoomed in.
-    Zoom,
+/// A place on the screen, or `off` to show nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    /// The top-left corner, below the menu bar.
+    TopLeft,
+    /// The top-right corner, below the menu bar.
+    TopRight,
+    /// The bottom-left corner, above the Dock.
+    BottomLeft,
+    /// The bottom-right corner, above the Dock.
+    BottomRight,
+    /// Centred at the bottom, above the Dock.
+    Bottom,
+    /// Nowhere.
+    Off,
+}
+
+impl Position {
+    const NAMES: [(&'static str, Self); 6] = [
+        ("top-left", Self::TopLeft),
+        ("top-right", Self::TopRight),
+        ("bottom-left", Self::BottomLeft),
+        ("bottom-right", Self::BottomRight),
+        ("bottom", Self::Bottom),
+        ("off", Self::Off),
+    ];
+}
+
+impl<'de> Deserialize<'de> for Position {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = Position;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(
+                    "`top-left`, `top-right`, `bottom-left`, `bottom-right`, `bottom` or `off`",
+                )
+            }
+
+            // YAML 1.1 reads an unquoted `off` as `false`.
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                if value {
+                    Err(E::invalid_value(serde::de::Unexpected::Bool(value), &self))
+                } else {
+                    Ok(Position::Off)
+                }
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Position::NAMES
+                    .iter()
+                    .find(|(name, _)| *name == value)
+                    .map(|(_, position)| *position)
+                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl JsonSchema for Position {
+    fn schema_name() -> Cow<'static, str> {
+        "Position".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        let names: Vec<&str> = Self::NAMES.iter().map(|(name, _)| *name).collect();
+        json_schema!({ "type": "string", "enum": names })
+    }
 }
 
 impl Edit {
-    /// Where the bar shows each part.
+    /// Where each kind of overlay settles.
     #[must_use]
     pub fn layout(&self) -> Layout {
-        self.bar.clone().unwrap_or_default()
+        self.layout
     }
 }
 
@@ -90,10 +148,10 @@ impl Edit {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Tracks {
-    /// Text in the bar along the top of the video; `""` hides the bar.
+    /// Texts, announced in the centre and then kept in their corner; `""` hides what lies beneath.
     #[serde(default)]
     text: Vec<TextItem>,
-    /// Stretches fast-forwarded, shown in the bar; they must not overlap.
+    /// Stretches fast-forwarded, announced and then kept in their corner; they must not overlap.
     #[serde(default)]
     speed: Vec<SpeedItem>,
     /// Zooms onto a point or a mark's position.
@@ -101,14 +159,14 @@ struct Tracks {
     zoom: Vec<ZoomItem>,
 }
 
-/// Text in the bar from `from` until `until`, or for `duration`.
+/// A text shown from `from` until `until`, or for `duration`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(transform = without_defaults)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("oneOf" = [{ "required": ["until"] }, { "required": ["duration"] }]))]
 struct TextItem {
-    /// What the bar shows; `""` hides it.
-    text: BarText,
+    /// What it says; `""` hides the texts beneath.
+    text: Text,
     /// When it starts.
     from: TimeRef,
     /// When it ends.
@@ -356,25 +414,6 @@ pub fn check(edit: &Edit, tape: &Tape) -> Result<(), ParseError> {
 /// The rules an edit keeps whatever the recording: each item ends one way, speed-ups take time, zooms have
 /// one centre and a scale in range.
 fn validate(edit: &Edit) -> Result<(), ParseError> {
-    if let Some(layout) = &edit.bar {
-        let slots = [
-            ("left", &layout.left),
-            ("center", &layout.center),
-            ("right", &layout.right),
-        ];
-        let mut seen = Vec::new();
-        for (slot, parts) in slots {
-            for (index, part) in parts.iter().enumerate() {
-                if seen.contains(part) {
-                    return Err(error(
-                        format!("bar.{slot}[{index}]"),
-                        "each part shows in one place only",
-                    ));
-                }
-                seen.push(*part);
-            }
-        }
-    }
     for placement in edit.placements() {
         if placement.until.is_some() == placement.duration.is_some() {
             return Err(error(
@@ -483,23 +522,23 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
     validate(edit)?;
     let marks = &file.marks;
     let placements = edit.placements();
-    let (texts, rest) = placements.split_at(edit.tracks.text.len());
+    let (text_items, rest) = placements.split_at(edit.tracks.text.len());
     let (speeds, zooms) = rest.split_at(edit.tracks.speed.len());
 
-    // The bar: the tape's texts below, the edit's above; an empty text hides what lies beneath.
+    // The tape's texts below, the edit's above; an empty text hides what lies beneath.
     let mut layers: Vec<(Duration, Duration, String)> = file
-        .bars
+        .texts
         .iter()
-        .map(|bar| (bar.start, bar.end, bar.text.clone()))
+        .map(|text| (text.start, text.end, text.text.clone()))
         .collect();
-    for (item, placement) in edit.tracks.text.iter().zip(texts) {
+    for (item, placement) in edit.tracks.text.iter().zip(text_items) {
         let (from, until) = place(placement, marks)?;
         layers.push((from, until, item.text.0.clone()));
     }
-    let bars = layer(&layers)
+    let texts = layer(&layers)
         .into_iter()
         .filter(|(_, _, text)| !text.is_empty())
-        .map(|(start, end, text)| BarEntry { text, start, end })
+        .map(|(start, end, text)| TextEntry { text, start, end })
         .collect();
 
     // Speed-ups side by side, never stacked.
@@ -566,7 +605,7 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
 
     Ok(TimelineFile {
         warps,
-        bars,
+        texts,
         zooms,
         ..file
     })
@@ -638,7 +677,7 @@ mod tests {
         TimelineFile {
             video: "t.raw.mkv".into(),
             warps: Vec::new(),
-            bars: Vec::new(),
+            texts: Vec::new(),
             zooms: Vec::new(),
             marks: vec![
                 mark("start", 0, None),
@@ -654,8 +693,8 @@ mod tests {
         apply(&parse(yaml).unwrap(), file)
     }
 
-    fn bar(text: &str, start: u64, end: u64) -> BarEntry {
-        BarEntry {
+    fn shown(text: &str, start: u64, end: u64) -> TextEntry {
+        TextEntry {
             text: text.into(),
             start: secs(start),
             end: secs(end),
@@ -669,8 +708,8 @@ mod tests {
             timeline(),
         )
         .unwrap();
-        assert_eq!(file.bars[0].start, secs(42));
-        assert_eq!(file.bars[0].end, Duration::from_millis(59_500));
+        assert_eq!(file.texts[0].start, secs(42));
+        assert_eq!(file.texts[0].end, Duration::from_millis(59_500));
         for bad in [
             "built +2s",
             "built + 2",
@@ -685,17 +724,21 @@ mod tests {
     }
 
     #[test]
-    fn a_later_text_lies_on_top_and_an_empty_one_hides_the_bar() {
+    fn a_later_text_lies_on_top_and_an_empty_one_hides_those_beneath() {
         let mut file = timeline();
-        file.bars = vec![bar("tape", 0, 100)];
+        file.texts = vec![shown("tape", 0, 100)];
         let file = applied(
             "tracks:\n  text:\n    - { text: edit, from: built, until: results }\n    - { text: '', from: start + 90s, until: end }\n",
             file,
         )
         .unwrap();
         assert_eq!(
-            file.bars,
-            [bar("tape", 0, 40), bar("edit", 40, 60), bar("tape", 60, 90)]
+            file.texts,
+            [
+                shown("tape", 0, 40),
+                shown("edit", 40, 60),
+                shown("tape", 60, 90)
+            ]
         );
     }
 
@@ -809,24 +852,32 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_lays_out_its_parts_once_each() {
+    fn the_layout_places_each_kind_or_switches_it_off() {
         assert_eq!(parse("tracks: {}\n").unwrap().layout(), Layout::default());
-        let edit = parse("bar: { center: [keys], right: [text] }\n").unwrap();
+        let edit = parse("layout: { text: bottom-left, keys: off }\n").unwrap();
         assert_eq!(
             edit.layout(),
             Layout {
-                left: Vec::new(),
-                center: vec![Part::Keys],
-                right: vec![Part::Text],
+                text: Position::BottomLeft,
+                effects: Position::TopRight,
+                keys: Position::Off,
             }
         );
-        assert_eq!(apply(&edit, timeline()).map(|f| f.bars.len()), Ok(0));
-        let twice = parse("bar: { left: [text, keys], right: [zoom, keys] }\n").unwrap();
         assert_eq!(
-            apply(&twice, timeline()).unwrap_err().at,
-            Where::Step("bar.right[1]".into())
+            parse("layout: { keys: \"off\" }\n").unwrap().layout().keys,
+            Position::Off
         );
-        assert!(parse("bar: { left: [sound] }\n").is_err());
+        for bad in [
+            "layout: { text: middle }\n",
+            "layout: { keys: on }\n",
+            "layout: { sound: off }\n",
+        ] {
+            let err = parse(bad).unwrap_err();
+            assert!(
+                matches!(err.at, Where::Position { line: 1, .. }),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

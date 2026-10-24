@@ -4,16 +4,9 @@
   "description": "An edit file: items on tracks, each placed against the recording's marks.",
   "type": "object",
   "properties": {
-    "bar": {
-      "description": "Where the bar shows each part; `{ left: [text], right: [speed, zoom, keys] }` unless given.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Layout"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "layout": {
+      "description": "Where each kind of overlay settles after its announcement in the centre; `{ text: top-left, effects:\ntop-right, keys: bottom }` unless given.",
+      "$ref": "#/$defs/Layout"
     },
     "tracks": {
       "description": "The tracks; within one, a later item lies on top of an earlier one.",
@@ -22,9 +15,6 @@
   },
   "additionalProperties": false,
   "$defs": {
-    "BarText": {
-      "type": "string"
-    },
     "Duration": {
       "description": "A duration: whole milliseconds like `500ms`, or seconds or minutes like `1.5s` or `2m`.",
       "type": "string",
@@ -36,29 +26,20 @@
       "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?[sm])$"
     },
     "Layout": {
-      "description": "Where the bar along the top of the video shows its parts; a part left out never shows.",
+      "description": "Where each kind of overlay settles; the centre is where texts and effects announce themselves first.",
       "type": "object",
       "properties": {
-        "center": {
-          "description": "Parts in the middle, in order.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Part"
-          }
+        "effects": {
+          "description": "The running speed-ups and zooms: what is happening.",
+          "$ref": "#/$defs/Position"
         },
-        "left": {
-          "description": "Parts from the left edge, in order.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Part"
-          }
+        "keys": {
+          "description": "The shortcuts, shown on press and never announced.",
+          "$ref": "#/$defs/Position"
         },
-        "right": {
-          "description": "Parts up to the right edge, in order.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Part"
-          }
+        "text": {
+          "description": "The texts: where we are.",
+          "$ref": "#/$defs/Position"
         }
       },
       "additionalProperties": false
@@ -86,31 +67,6 @@
       "minLength": 1,
       "pattern": "\\S"
     },
-    "Part": {
-      "description": "What the bar can show.",
-      "oneOf": [
-        {
-          "description": "The text of the `text` track and the tape's `bar` steps.",
-          "type": "string",
-          "const": "text"
-        },
-        {
-          "description": "Each shortcut pressed, as keycaps for 1.5 s.",
-          "type": "string",
-          "const": "keys"
-        },
-        {
-          "description": "A speed-up's label and how long it really took.",
-          "type": "string",
-          "const": "speed"
-        },
-        {
-          "description": "How far the view is zoomed in.",
-          "type": "string",
-          "const": "zoom"
-        }
-      ]
-    },
     "Point": {
       "description": "A screen position in pixels from the top-left corner.",
       "type": "object",
@@ -132,6 +88,17 @@
       "required": [
         "x",
         "y"
+      ]
+    },
+    "Position": {
+      "type": "string",
+      "enum": [
+        "top-left",
+        "top-right",
+        "bottom-left",
+        "bottom-right",
+        "bottom",
+        "off"
       ]
     },
     "SpeedItem": {
@@ -185,8 +152,11 @@
         "from"
       ]
     },
+    "Text": {
+      "type": "string"
+    },
     "TextItem": {
-      "description": "Text in the bar from `from` until `until`, or for `duration`.",
+      "description": "A text shown from `from` until `until`, or for `duration`.",
       "type": "object",
       "properties": {
         "duration": {
@@ -198,8 +168,8 @@
           "$ref": "#/$defs/Moment"
         },
         "text": {
-          "description": "What the bar shows; `\"\"` hides it.",
-          "$ref": "#/$defs/BarText"
+          "description": "What it says; `\"\"` hides the texts beneath.",
+          "$ref": "#/$defs/Text"
         },
         "until": {
           "description": "When it ends.",
@@ -236,14 +206,14 @@
       "type": "object",
       "properties": {
         "speed": {
-          "description": "Stretches fast-forwarded, shown in the bar; they must not overlap.",
+          "description": "Stretches fast-forwarded, announced and then kept in their corner; they must not overlap.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SpeedItem"
           }
         },
         "text": {
-          "description": "Text in the bar along the top of the video; `\"\"` hides the bar.",
+          "description": "Texts, announced in the centre and then kept in their corner; `\"\"` hides what lies beneath.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/TextItem"

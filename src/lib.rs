@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod platform;
 pub mod process;
 pub mod recorder;
+pub mod scene;
 pub mod tape;
 mod units;
 pub mod warp;

@@ -38,7 +38,7 @@ steps:
   - waitWindow: { title: sh, timeout: 30s }
   - paste: git clone https://github.com/Hansehart/o3s.git
   - key: return
-  - bar: Cloning o3s                # text along the top of the video until the next bar; "" hides it
+  - text: Cloning o3s               # shown until the next text; "" hides it
   - zoom: { point: { x: 480, y: 200 } }   # zoom the video in there until the next zoom; `off` zooms out
   - warp: { label: Cloning, length: 2s, steps: [waitUntil: { command: test -d o3s, timeout: 2m }] }
   - click: { button: Open, timeout: 2m }
@@ -51,13 +51,13 @@ To edit without recording again, a tape names moments with `mark: <name>` (or `m
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Hansehart/taperec/main/schema/taperec-edit.schema.json
 tracks:
-  text:  [{ text: Building the cage, from: start, until: cage-built }]          # "" hides the bar
+  text:  [{ text: Building the cage, from: start, until: cage-built }]          # "" hides those beneath
   speed: [{ label: Building, length: 5s, from: reopen + 3s, until: cage-built }]
   zoom:  [{ at: results, scale: 1.75, from: results - 0.5s, duration: 6s }]    # or `point: { x, y }`
-bar: { left: [text], right: [speed, zoom, keys] }   # the default; a part left out never shows
+layout: { text: top-left, effects: top-right, keys: bottom }   # the default; `off` hides a kind
 ```
 
-Every after effect shows in the bar along the top: `text`, the speed-up's label and real duration (`speed`), the zoom factor (`zoom`), and each shortcut and paste as keycaps for 1.5 s (`keys`, labelled by the recording platform, e.g. ⇧ ⌘ P). The bar appears whenever one of its parts has something to show.
+Texts and speed-ups (label and real duration) announce themselves in the centre of the video the first time they show, then glide to where `layout` keeps them while they last; a zoom's factor goes straight there, as the zoom points at the centre; each shortcut and paste shows as keycaps above the Dock for 1.5 s, labelled by the recording platform, e.g. ⇧ ⌘ P.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it switches off the crash-looping icon agent (actions/runner-images#14751), so apps the Dock has not cached show a generic icon. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 

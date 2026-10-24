@@ -28,7 +28,7 @@ mod document;
 
 pub use document::schema;
 pub(crate) use document::{
-    de_duration, de_opt_duration, without_defaults, BarText, DocPoint, DurationSchema, Name,
+    de_duration, de_opt_duration, without_defaults, DocPoint, DurationSchema, Name, Text,
 };
 
 /// A position on screen, in pixels from the top-left corner.
@@ -319,8 +319,8 @@ pub enum Step {
     Type(String),
     /// Put text on the clipboard and paste it with a single keystroke.
     Paste(String),
-    /// Show text in the video's bar from here on; empty hides the bar.
-    Bar(String),
+    /// Show text from here on, announced in the centre and then kept in its corner; empty hides it.
+    Text(String),
     /// Zoom the video onto a target from here on, or back to the full screen with `None`.
     Zoom(Option<(Target, ZoomScale)>),
     /// Press a key chord.
@@ -829,15 +829,15 @@ steps:
     }
 
     #[test]
-    fn bar_sets_or_clears_its_text() {
+    fn text_sets_or_clears_what_shows() {
         assert_eq!(
-            steps("  - bar: Part 1 · Docker\n  - bar: \"\"\n"),
+            steps("  - text: Part 1 · Docker\n  - text: \"\"\n"),
             vec![
-                Step::Bar("Part 1 · Docker".into()),
-                Step::Bar(String::new())
+                Step::Text("Part 1 · Docker".into()),
+                Step::Text(String::new())
             ]
         );
-        let err = error("  - bar: \"one\\ntwo\"\n");
+        let err = error("  - text: \"one\\ntwo\"\n");
         assert!(err.message.contains("control characters"), "{err}");
     }
 
