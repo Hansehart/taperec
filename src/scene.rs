@@ -139,6 +139,15 @@ pub fn elements(
     }
     elements.retain(|element| element.appear < element.end);
     elements.sort_by_key(|element| element.appear);
+    // What was announced once comes back settled, e.g. a text resuming after one laid over it.
+    let mut announced: Vec<Vec<Run>> = Vec::new();
+    for element in elements.iter_mut().filter(|e| e.announce) {
+        if announced.contains(&element.content) {
+            element.announce = false;
+        } else {
+            announced.push(element.content.clone());
+        }
+    }
     elements
 }
 
@@ -355,6 +364,18 @@ mod tests {
         assert_eq!(got[0].progress(ms(1100)), 0.0);
         assert!((got[0].progress(ms(1450)) - 0.5).abs() < 1e-6);
         assert_eq!(got[0].progress(ms(1700)), 1.0);
+    }
+
+    #[test]
+    fn what_was_announced_comes_back_settled() {
+        let mut file = timeline();
+        file.texts = vec![
+            text("Part 1", 0, 10),
+            text("Typing", 10, 20),
+            text("Part 1", 20, 30),
+        ];
+        let announced: Vec<bool> = all(&file).iter().map(|e| e.announce).collect();
+        assert_eq!(announced, [true, true, false]);
     }
 
     #[test]
