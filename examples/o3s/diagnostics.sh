@@ -13,7 +13,13 @@ if [ -x "$docker" ]; then
     perl -e 'alarm 30; exec @ARGV' "$docker" logs --timestamps "$c" > "$out/container-$c.log" 2>&1
   done
   cage=$("$docker" ps -q --filter label=com.docker.compose.service=cage)
-  [ -n "$cage" ] && perl -e 'alarm 30; exec @ARGV' "$docker" exec "$cage" sh -c 'ls -la ~/.vscode-server ~/.vscode-server/bin 2>&1; ps aux' > "$out/cage-inside.txt" 2>&1
+  if [ -n "$cage" ]; then
+    perl -e 'alarm 30; exec @ARGV' "$docker" exec "$cage" sh -c 'ls -la /home/*/.vscode-server 2>&1; ps aux' > "$out/cage-inside.txt" 2>&1
+    # The VS Code server's own logs, which name a crash inside the cage.
+    mkdir -p "$out/cage-vscode-server"
+    perl -e 'alarm 60; exec @ARGV' "$docker" exec "$cage" sh -c 'tar -cz -C / home/*/.vscode-server/data/logs 2>/dev/null' |
+      tar -xz -C "$out/cage-vscode-server" 2>/dev/null
+  fi
 fi
 cp -R "$HOME/Library/Application Support/Code/logs" "$out/vscode-logs" 2>/dev/null
 # What VideoToolbox and its encoder service reported while recording ended.

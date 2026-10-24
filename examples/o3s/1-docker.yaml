@@ -3,9 +3,14 @@
 output: o3s-1-docker.mp4
 steps:
   - set: { moveDuration: 700ms }
+  - bar: "1/3 · Install Docker Desktop"
   - sleep: 1s
+  # Every click is zoomed in on, then out once its result shows.
+  - zoom: { dock: Terminal }
   - click: { dock: Terminal }
   - waitWindow: { title: sh, timeout: 30s }
+  - sleep: 500ms
+  - zoom: off
   - sleep: 1s
   - paste: curl -fsSLo /tmp/Docker.dmg https://desktop.docker.com/mac/main/amd64/Docker.dmg
   - key: return

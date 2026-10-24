@@ -3,9 +3,14 @@
 output: o3s-2-vscode.mp4
 steps:
   - set: { moveDuration: 700ms }
+  - bar: "2/3 · Install VS Code and Dev Containers, clone o3s"
   - sleep: 1s
+  # Every click is zoomed in on, then out once its result shows.
+  - zoom: { dock: Terminal }
   - click: { dock: Terminal }
   - waitWindow: { title: sh, timeout: 30s }
+  - sleep: 500ms
+  - zoom: off
   - focus: Terminal
   - sleep: 1s
   - key: primary+k
@@ -38,6 +43,11 @@ steps:
   - paste: git clone https://github.com/Hansehart/o3s.git && code o3s
   - key: return
   # macOS asks once before opening an app downloaded from the internet.
+  - bar: "macOS asks once before opening an app from the internet"
+  - zoom: { button: Open, timeout: 2m }
   - click: { button: Open, timeout: 2m }
+  - sleep: 500ms
+  - zoom: off
   - waitWindow: { title: o3s, timeout: 2m }
+  - bar: "2/3 · Install VS Code and Dev Containers, clone o3s"
   - sleep: 3s
