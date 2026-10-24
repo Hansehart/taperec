@@ -46,6 +46,12 @@ public func formatDock(_ items: [(name: String, frame: Frame)]) -> String {
     }.joined()
 }
 
+/// `x<TAB>y<TAB>width<TAB>height` of a window, or nothing without one.
+public func formatWindow(_ frame: Frame?) -> String {
+    guard let frame else { return "" }
+    return [frame.x, frame.y, frame.width, frame.height].map(String.init).joined(separator: "\t") + "\n"
+}
+
 /// One window title per line.
 public func formatWindows(_ titles: [String]) -> String {
     titles.map { field($0) + "\n" }.joined()

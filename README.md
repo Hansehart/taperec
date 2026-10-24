@@ -54,6 +54,7 @@ tracks:
   text:  [{ text: Building the cage, from: start, until: cage-built }]          # "" hides those beneath
   speed: [{ label: Building, length: 5s, from: reopen + 3s, until: cage-built }]
   zoom:  [{ at: results, scale: 1.75, from: results - 0.5s, duration: 6s }]    # or `point: { x, y }`
+  # `window: <mark>` instead frames the window under the mark, as far in as it fits
 layout: { text: top-left, effects: top-right, keys: bottom }   # the default; `off` hides a kind
 ```
 

@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use super::{CaptureError, Control, Error, Platform, Recorder, Shortcut};
 use crate::process::{Output, Runner};
 use crate::recorder::{self, Recording};
-use crate::tape::{AppName, Key, KeyChord, Modifier, Point, ShellCommand};
+use crate::tape::{AppName, Key, KeyChord, Modifier, Point, Rect, ShellCommand};
 use crate::units;
 
 /// The Swift helper that drives input and reads the screen (`tools/desktop`).
@@ -119,6 +119,11 @@ impl<R: Runner> Platform for Helper<R> {
     fn windows(&mut self, limit: Option<Duration>) -> Result<Vec<String>, Error> {
         let output = self.helper(&["windows"], limit)?;
         Ok(output.stdout.lines().map(str::to_owned).collect())
+    }
+
+    fn window_at(&mut self, at: Point) -> Result<Option<Rect>, Error> {
+        let (x, y) = (at.x.to_string(), at.y.to_string());
+        parse_window(self.helper(&["window-at", &x, &y], None)?.stdout)
     }
 
     fn buttons(&mut self, limit: Option<Duration>) -> Result<Vec<Control>, Error> {
@@ -293,6 +298,27 @@ fn parse_dock(text: &str) -> Option<Vec<(String, Point)>> {
         .collect()
 }
 
+/// A window's frame from `x<TAB>y<TAB>width<TAB>height`, or none from an empty answer.
+fn parse_window(output: String) -> Result<Option<Rect>, Error> {
+    let line = output.trim_end();
+    if line.is_empty() {
+        return Ok(None);
+    }
+    let fields: Vec<Option<u32>> = line.split('\t').map(units::natural::<u32>).collect();
+    match fields.as_slice() {
+        [Some(x), Some(y), Some(width), Some(height)] => Ok(Some(Rect {
+            x: *x,
+            y: *y,
+            width: *width,
+            height: *height,
+        })),
+        _ => Err(Error::UnexpectedOutput {
+            what: "a window's frame",
+            output,
+        }),
+    }
+}
+
 /// The keycaps macOS shows for `shortcut`: modifiers in the menus' order ⌃ ⌥ ⇧ ⌘, then the key.
 fn shortcut_labels(shortcut: Shortcut<'_>) -> Vec<String> {
     let Shortcut::Chord(chord) = shortcut else {
@@ -363,6 +389,28 @@ mod tests {
         match &tape.steps[0] {
             Step::Key(chord) => shortcut_labels(Shortcut::Chord(chord)),
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_window_frame_reads_from_one_line_or_none() {
+        assert_eq!(
+            parse_window("10\t20\t300\t200\n".into()),
+            Ok(Some(Rect {
+                x: 10,
+                y: 20,
+                width: 300,
+                height: 200
+            }))
+        );
+        assert_eq!(parse_window(String::new()), Ok(None));
+        for bad in [
+            "10\t20\t300\n",
+            "10\t20\t300\t200\t1\n",
+            "a\tb\tc\td\n",
+            "-1\t2\t3\t4\n",
+        ] {
+            assert!(parse_window(bad.into()).is_err(), "{bad:?}");
         }
     }
 

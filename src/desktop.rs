@@ -8,7 +8,7 @@ use crate::motion;
 pub use crate::platform::Error;
 use crate::platform::{pick_control, Platform, Shortcut};
 use crate::tape::{
-    AppName, ControlLabel, DockItem, KeyChord, Point, ShellCommand, Step, Target, WindowName,
+    AppName, ControlLabel, DockItem, KeyChord, Point, Rect, ShellCommand, Step, Target, WindowName,
 };
 
 /// Pointer updates per second while gliding.
@@ -37,6 +37,12 @@ impl<P: Platform> Desktop<P> {
             typing_delay: Duration::from_millis(50),
             move_duration: Duration::from_millis(600),
         }
+    }
+
+    /// The window under `at`, if the platform finds one; a failed query counts as none, as it only shapes
+    /// how a recording is framed.
+    pub fn window_at(&mut self, at: Point) -> Option<Rect> {
+        self.platform.window_at(at).ok().flatten()
     }
 
     /// How the platform labels `shortcut` on its keycaps.

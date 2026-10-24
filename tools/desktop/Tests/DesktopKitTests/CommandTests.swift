@@ -20,8 +20,9 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(Command(["focus", "Visual Studio Code"]), .focus("Visual Studio Code"))
         XCTAssertEqual(Command(["record", "/out/demo.raw.mov"]), .record("/out/demo.raw.mov"))
         XCTAssertEqual(Command(["encoder"]), .encoder)
+        XCTAssertEqual(Command(["window-at", "960", "540"]), .windowAt(x: 960, y: 540))
         for bad in [[], ["move", "1"], ["move", "-1", "2"], ["type", "ab"], ["focus", ""], ["jump"], ["click", "x"],
-                    ["record"], ["record", ""], ["encoder", "x"]] {
+                    ["record"], ["record", ""], ["encoder", "x"], ["window-at", "1"], ["window-at", "1", "-2"]] {
             XCTAssertNil(Command(bad), "\(bad)")
         }
     }
@@ -33,6 +34,8 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(formatDock([(name: "Terminal", frame: Frame(x: 1, y: 2, width: 3, height: 4))]),
                        "Terminal\t1\t2\t3\t4\n")
         XCTAssertEqual(formatWindows(["a", "b"]), "a\nb\n")
+        XCTAssertEqual(formatWindow(Frame(x: 10, y: 20, width: 300, height: 200)), "10\t20\t300\t200\n")
+        XCTAssertEqual(formatWindow(nil), "")
     }
 
     func testNamedKeysMatchTaperec() throws {

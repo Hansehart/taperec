@@ -40,6 +40,19 @@ pub struct Point {
     pub y: u32,
 }
 
+/// A box on screen, in pixels from the top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    /// Its left edge.
+    pub x: u32,
+    /// Its top edge.
+    pub y: u32,
+    /// Its width.
+    pub width: u32,
+    /// Its height.
+    pub height: u32,
+}
+
 /// An item's exact name in the macOS Dock, e.g. `Terminal` or `System Settings`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DockItem(String);

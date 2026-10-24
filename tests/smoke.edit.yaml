@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=../schema/taperec-edit.schema.json
-# Places a text, a speed-up and a zoom against the smoke tape's marks.
+# Places a text, a speed-up and a zoom onto the Terminal window against the smoke tape's marks.
 tracks:
   text:
     - { text: Typing a command, from: prompt, until: waiting }
   speed:
     - { label: Waiting, length: 1s, from: waiting, until: waited }
   zoom:
-    - { at: prompt, from: prompt, until: waited }
+    - { window: prompt, from: prompt, until: waited }

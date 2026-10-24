@@ -43,6 +43,23 @@ func windowTitles() -> [String] {
         .filter { !$0.isEmpty }
 }
 
+/// The frame of the topmost window at (`x`, `y`), in any app; nil where no window is.
+func windowFrame(atX x: Int, y: Int) -> Frame? {
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(x), Float(y), &hit) == .success,
+          let hit
+    else { return nil }
+    if string(hit, kAXRoleAttribute) == kAXWindowRole {
+        return frame(hit)
+    }
+    // Elements inside a window carry it as their AXWindow attribute.
+    guard let window = copy(hit, kAXWindowAttribute), CFGetTypeID(window) == AXUIElementGetTypeID() else {
+        return nil
+    }
+    // The type was checked above.
+    return frame(window as! AXUIElement)
+}
+
 /// Labelled buttons of every app's windows, including groups and sheets two levels down.
 func onScreenButtons() -> [Button] {
     var found: [Button] = []

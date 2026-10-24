@@ -220,7 +220,7 @@
           }
         },
         "zoom": {
-          "description": "Zooms onto a point or a mark's position.",
+          "description": "Zooms onto a point, a mark's position or the window under a mark.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ZoomItem"
@@ -230,7 +230,7 @@
       "additionalProperties": false
     },
     "ZoomItem": {
-      "description": "A zoom onto a point or a mark's position, eased in at `from` and out at the end.",
+      "description": "A zoom onto a point, a mark's position or the window under a mark, eased in at `from` and out at the end.",
       "type": "object",
       "properties": {
         "at": {
@@ -250,7 +250,7 @@
           "$ref": "#/$defs/Point"
         },
         "scale": {
-          "description": "How far to zoom in, from 1 to 3; 1.5 unless given.",
+          "description": "How far to zoom in, from 1 to 3; 1.5 unless given; the window sets it for `window`.",
           "type": [
             "number",
             "null"
@@ -269,6 +269,10 @@
               "type": "null"
             }
           ]
+        },
+        "window": {
+          "description": "A mark recorded with a position, whose window the zoom frames with a margin, as far in as fits.",
+          "$ref": "#/$defs/MarkRef"
         }
       },
       "additionalProperties": false,
@@ -283,6 +287,11 @@
             {
               "required": [
                 "point"
+              ]
+            },
+            {
+              "required": [
+                "window"
               ]
             }
           ]
