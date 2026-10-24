@@ -7,8 +7,8 @@ use std::path::PathBuf;
 /// Usage text shown for `--help` and after argument errors.
 pub const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG] [--recorder auto|ffmpeg|screencapturekit]
        taperec check <tape.yaml>...
-       taperec render <name.timeline.yaml> [--out FILE]
-       taperec schema";
+       taperec render <name.timeline.yaml> [--edit FILE] [--out FILE]
+       taperec schema [tape|edit]";
 
 /// Parsed arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,12 +42,14 @@ pub enum Invocation {
     Record(Args),
     /// Validate tapes without recording.
     Check(Vec<PathBuf>),
-    /// Print the tape JSON Schema.
-    Schema,
+    /// Print the JSON Schema of tapes or edit files.
+    Schema(SchemaKind),
     /// Build a video from a recording's timeline file.
     Render {
         /// The timeline file.
         timeline: PathBuf,
+        /// The edit file applied on top.
+        edit: Option<PathBuf>,
         /// The video to write.
         out: PathBuf,
     },
@@ -55,6 +57,15 @@ pub enum Invocation {
     Help,
     /// Print the version.
     Version,
+}
+
+/// Which file's JSON Schema to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaKind {
+    /// A tape.
+    Tape,
+    /// An edit file.
+    Edit,
 }
 
 /// Why the arguments were rejected.
@@ -119,9 +130,17 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
         }
         Some("schema") => {
             args.next();
+            let kind = match args.next() {
+                None => SchemaKind::Tape,
+                Some(kind) => match kind.to_str() {
+                    Some("tape") => SchemaKind::Tape,
+                    Some("edit") => SchemaKind::Edit,
+                    _ => return Err(UsageError::ExtraArgument(kind)),
+                },
+            };
             return match args.next() {
                 Some(extra) => Err(UsageError::ExtraArgument(extra)),
-                None => Ok(Invocation::Schema),
+                None => Ok(Invocation::Schema(kind)),
             };
         }
         _ => {}
@@ -167,13 +186,21 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, Us
     }))
 }
 
-/// Parses `render <timeline> [--out FILE]`; without `--out` the video sits next to the timeline.
+/// Parses `render <timeline> [--edit FILE] [--out FILE]`; without `--out` the video sits next to the timeline.
 fn render(args: impl Iterator<Item = OsString>) -> Result<Invocation, UsageError> {
     let mut args = args;
     let mut timeline: Option<PathBuf> = None;
+    let mut edit = None;
     let mut out = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--edit") => {
+                edit = Some(
+                    args.next()
+                        .ok_or(UsageError::MissingValue("--edit"))?
+                        .into(),
+                );
+            }
             Some("--out") => {
                 out = Some(args.next().ok_or(UsageError::MissingValue("--out"))?.into());
             }
@@ -195,7 +222,11 @@ fn render(args: impl Iterator<Item = OsString>) -> Result<Invocation, UsageError
             .ok_or(UsageError::MissingValue("--out"))?;
         timeline.with_file_name(format!("{stem}.mp4"))
     };
-    Ok(Invocation::Render { timeline, out })
+    Ok(Invocation::Render {
+        timeline,
+        edit,
+        out,
+    })
 }
 
 #[cfg(test)]
@@ -309,13 +340,22 @@ mod tests {
             parse_strs(&["render", "out/smoke.timeline.yaml"]),
             Ok(Invocation::Render {
                 timeline: "out/smoke.timeline.yaml".into(),
+                edit: None,
                 out: "out/smoke.mp4".into(),
             })
         );
         assert_eq!(
-            parse_strs(&["render", "t.yaml", "--out", "cut.mp4"]),
+            parse_strs(&[
+                "render",
+                "t.yaml",
+                "--out",
+                "cut.mp4",
+                "--edit",
+                "t.edit.yaml"
+            ]),
             Ok(Invocation::Render {
                 timeline: "t.yaml".into(),
+                edit: Some("t.edit.yaml".into()),
                 out: "cut.mp4".into(),
             })
         );
@@ -324,13 +364,28 @@ mod tests {
             Err(UsageError::MissingValue("--out"))
         );
         assert_eq!(parse_strs(&["render"]), Err(UsageError::MissingTimeline));
+        assert_eq!(
+            parse_strs(&["render", "t.timeline.yaml", "--edit"]),
+            Err(UsageError::MissingValue("--edit"))
+        );
     }
 
     #[test]
-    fn schema_takes_nothing() {
-        assert_eq!(parse_strs(&["schema"]), Ok(Invocation::Schema));
+    fn schema_is_the_tapes_unless_told() {
+        assert_eq!(
+            parse_strs(&["schema"]),
+            Ok(Invocation::Schema(SchemaKind::Tape))
+        );
+        assert_eq!(
+            parse_strs(&["schema", "edit"]),
+            Ok(Invocation::Schema(SchemaKind::Edit))
+        );
         assert_eq!(
             parse_strs(&["schema", "x"]),
+            Err(UsageError::ExtraArgument("x".into()))
+        );
+        assert_eq!(
+            parse_strs(&["schema", "tape", "x"]),
             Err(UsageError::ExtraArgument("x".into()))
         );
     }

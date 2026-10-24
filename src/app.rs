@@ -14,7 +14,7 @@ use crate::platform::macos::{Capture, Helper, ScreenRecorder};
 use crate::platform::{Platform, Recorder};
 use crate::process::SystemRunner;
 use crate::recorder::FPS;
-use crate::{desktop, recorder, tape, warp};
+use crate::{desktop, edit, recorder, tape, warp};
 
 /// The program that renders a caption to a PNG: `taperec-caption <text> <out.png>`.
 const CAPTION_TOOL: &str = "taperec-caption";
@@ -29,9 +29,9 @@ pub enum AppError {
         /// The I/O error.
         detail: String,
     },
-    /// The tape is invalid.
+    /// The tape or edit file is invalid.
     Parse {
-        /// The tape path.
+        /// The file's path.
         path: PathBuf,
         /// What is wrong, and where.
         error: tape::ParseError,
@@ -121,19 +121,45 @@ impl From<recorder::Error> for AppError {
     }
 }
 
-/// Reads and parses each tape without recording, returning one error per invalid tape.
+/// Reads and parses each tape and its edit file without recording, returning one error per invalid tape.
 #[must_use]
 pub fn check(tapes: &[PathBuf]) -> Vec<AppError> {
-    tapes.iter().filter_map(|path| load(path).err()).collect()
+    tapes
+        .iter()
+        .filter_map(|path| load(path).and_then(|tape| load_edit(path, &tape)).err())
+        .collect()
 }
 
 /// Reads and parses the tape at `path`.
 fn load(path: &Path) -> Result<tape::Tape, AppError> {
+    parse_file(path, tape::parse)
+}
+
+/// Reads the edit file the tape at `path` names, if any, and checks it against the tape's marks; returns its
+/// path.
+fn load_edit(path: &Path, tape: &tape::Tape) -> Result<Option<PathBuf>, AppError> {
+    let Some(name) = &tape.edit else {
+        return Ok(None);
+    };
+    let edit_path = path.parent().unwrap_or(Path::new(".")).join(name);
+    let edit = parse_file(&edit_path, edit::parse)?;
+    edit::check(&edit, tape).map_err(|error| AppError::Parse {
+        path: edit_path.clone(),
+        error,
+    })?;
+    Ok(Some(edit_path))
+}
+
+/// Reads the file at `path` and parses it with `parse`.
+fn parse_file<T>(
+    path: &Path,
+    parse: fn(&str) -> Result<T, tape::ParseError>,
+) -> Result<T, AppError> {
     let source = fs::read_to_string(path).map_err(|e| AppError::Read {
         path: path.to_owned(),
         detail: e.to_string(),
     })?;
-    tape::parse(&source).map_err(|error| AppError::Parse {
+    parse(&source).map_err(|error| AppError::Parse {
         path: path.to_owned(),
         error,
     })
@@ -146,6 +172,7 @@ fn load(path: &Path) -> Result<tape::Tape, AppError> {
 /// Fails before recording on a bad tape or a non-macOS host; a failed step aborts the recording.
 pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     let tape = load(&args.tape)?;
+    let edit = load_edit(&args.tape, &tape)?;
     if os != "macos" {
         return Err(AppError::NotMacOs(os.to_owned()));
     }
@@ -181,7 +208,7 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     )?;
     let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
     save_timeline(&timeline_path, stem, &video, marks)?;
-    render(&timeline_path, &path)?;
+    render(&timeline_path, &path, edit.as_deref())?;
     Ok(path)
 }
 
@@ -202,6 +229,7 @@ pub fn capture<P: Platform, R: Recorder>(
 ) -> Result<warp::Marks, AppError> {
     recorder.start(raw)?;
     let mut timeline = warp::Timeline::default();
+    timeline.moment(tape::MarkName::START, recorder.clock(), None);
     for step in &tape.steps {
         // Marks share the clock the capture stamps its frames with.
         timeline.mark(step, recorder.clock());
@@ -213,6 +241,17 @@ pub fn capture<P: Platform, R: Recorder>(
                 .map(|centre| timeline.zoom(Some((centre, scale.percent())), recorder.clock())),
             tape::Step::Zoom(None) => {
                 timeline.zoom(None, recorder.clock());
+                Ok(())
+            }
+            // A mark with a target falls once the target is found, like a zoom.
+            tape::Step::Mark {
+                name,
+                at: Some(target),
+            } => desktop
+                .locate(target, &mut || recorder.check().is_ok())
+                .map(|found| timeline.moment(name.as_str(), recorder.clock(), Some(found))),
+            tape::Step::Mark { name, at: None } => {
+                timeline.moment(name.as_str(), recorder.clock(), None);
                 Ok(())
             }
             _ => desktop.play_while(step, &mut || recorder.check().is_ok()),
@@ -271,11 +310,22 @@ fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Re
             percent: zoom.percent,
         })
         .collect();
+    let marks = marks
+        .moments
+        .into_iter()
+        .map(|moment| warp::MarkEntry {
+            name: moment.name,
+            at: moment.at,
+            x: moment.position.map(|p| p.x),
+            y: moment.position.map(|p| p.y),
+        })
+        .collect();
     let file = warp::TimelineFile {
         video: video.to_owned(),
         warps,
         bars,
         zooms,
+        marks,
     };
     let timeline_error = |detail: String| AppError::Timeline {
         path: path.to_owned(),
@@ -285,19 +335,33 @@ fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Re
     fs::write(path, text).map_err(|e| timeline_error(e.to_string()))
 }
 
-/// Builds the video at `out` from a recording's timeline file, its raw capture and captions; needs ffmpeg only.
+/// Builds the video at `out` from a recording's timeline file, its raw capture and captions, with the `edit`
+/// file on top if given; needs ffmpeg only.
 ///
 /// # Errors
 ///
-/// An unreadable timeline, or ffmpeg failing to probe, remux or render.
-pub fn render(timeline: &Path, out: &Path) -> Result<(), AppError> {
+/// An unreadable timeline or edit file, an edit not fitting the recording's marks, or ffmpeg failing to probe,
+/// remux or render.
+pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), AppError> {
     let timeline_error = |detail: String| AppError::Timeline {
         path: timeline.to_owned(),
         detail,
     };
     let text = fs::read_to_string(timeline).map_err(|e| timeline_error(e.to_string()))?;
-    let file: warp::TimelineFile =
+    let mut file: warp::TimelineFile =
         serde_saphyr::from_str(&text).map_err(|e| timeline_error(e.to_string()))?;
+    if let Some(path) = edit {
+        let name = timeline
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let stem = name.strip_suffix(".timeline.yaml").unwrap_or(name);
+        let parse_error = |error| AppError::Parse {
+            path: path.to_owned(),
+            error,
+        };
+        file = edit::apply(&parse_file(path, edit::parse)?, file, stem).map_err(parse_error)?;
+    }
     let dir = timeline.parent().unwrap_or(Path::new("."));
     let capture = dir.join(&file.video);
     // Warps shorter than a frame play as normal footage.
@@ -618,7 +682,7 @@ mod tests {
         }
 
         #[test]
-        fn a_tape_without_warps_or_bars_stops_cleanly_with_no_marks() {
+        fn a_tape_without_after_effects_stops_cleanly_marking_start_and_end() {
             let platform = FakePlatform::default();
             let mut recorder = platform.recorder();
             let mut desktop = Desktop::new(platform);
@@ -630,8 +694,45 @@ mod tests {
                 None,
             )
             .unwrap();
-            assert_eq!(marked, warp::Marks::default());
+            let names: Vec<&str> = marked.moments.iter().map(|m| m.name.as_str()).collect();
+            assert_eq!(names, ["start", "end"]);
+            assert_eq!(
+                warp::Marks {
+                    moments: Vec::new(),
+                    ..marked
+                },
+                warp::Marks::default()
+            );
             assert_eq!(recorder.events.last(), Some(&Capture::Stopped));
+        }
+
+        #[test]
+        fn marks_fall_on_the_capture_clock_with_the_position_found() {
+            let platform = FakePlatform::default();
+            let mut recorder = platform.recorder();
+            let mut desktop = Desktop::new(platform);
+            let marks = capture(
+                &tape("  - sleep: 2s\n  - mark: typed\n  - sleep: 1s\n  - mark: { name: results, at: { point: { x: 400, y: 300 } } }\n  - sleep: 1s\n"),
+                &mut desktop,
+                &mut recorder,
+                Path::new("/out/t.raw.mov"),
+                None,
+            )
+            .unwrap();
+            let moment = |name: &str, at, position| warp::Moment {
+                name: name.into(),
+                at: Duration::from_secs(at),
+                position,
+            };
+            assert_eq!(
+                marks.moments,
+                [
+                    moment("start", 0, None),
+                    moment("typed", 2, None),
+                    moment("results", 3, Some(tape::Point { x: 400, y: 300 })),
+                    moment("end", 4, None),
+                ]
+            );
         }
     }
 }

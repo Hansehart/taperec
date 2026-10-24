@@ -9,8 +9,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const USAGE: &str = "usage: taperec <tape.yaml> [--out-dir DIR] [--failshot PNG] [--recorder auto|ffmpeg|screencapturekit]
        taperec check <tape.yaml>...
-       taperec render <name.timeline.yaml> [--out FILE]
-       taperec schema\n";
+       taperec render <name.timeline.yaml> [--edit FILE] [--out FILE]
+       taperec schema [tape|edit]\n";
 
 /// Runs the binary, returning its exit code and stderr.
 #[expect(

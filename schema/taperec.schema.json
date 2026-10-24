@@ -4,6 +4,10 @@
   "description": "A tape: the video it records and what happens on screen.",
   "type": "object",
   "properties": {
+    "edit": {
+      "description": "An edit file placing texts, speed-ups and zooms against the tape's marks, relative to the tape, e.g.\n`intro.edit.yaml`.",
+      "$ref": "#/$defs/Name"
+    },
     "output": {
       "description": "The video file, a plain name ending in `.mp4`, e.g. `intro.mp4`.",
       "$ref": "#/$defs/Output"
@@ -106,6 +110,49 @@
           "pattern": "^((primary|cmd|ctrl|alt|shift|fn)\\+)*(return|enter|esc|tab|space|delete|fwd-delete|f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12|f13|f14|f15|f16|arrow-up|arrow-down|arrow-left|arrow-right|home|end|page-up|page-down|num-0|num-1|num-2|num-3|num-4|num-5|num-6|num-7|num-8|num-9|num-clear|num-equals|num-divide|num-multiply|num-minus|num-plus|num-enter|mute|volume-up|volume-down|brightness-up|brightness-down|play-pause|play-previous|play-next|keys-light-toggle|keys-light-up|keys-light-down|[!-*,-~])$"
         }
       ]
+    },
+    "Mark": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MarkName"
+        },
+        {
+          "$ref": "#/$defs/MarkAt"
+        }
+      ]
+    },
+    "MarkAt": {
+      "description": "A mark with the position of a target, for the edit file to zoom onto.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "What to locate, like a click target; the mark falls when it is found.",
+          "$ref": "#/$defs/Target"
+        },
+        "name": {
+          "description": "The mark's name.",
+          "$ref": "#/$defs/MarkName"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "at"
+      ]
+    },
+    "MarkName": {
+      "description": "Lowercase letters, digits and hyphens; `start` and `end` are implicit.",
+      "type": "string",
+      "examples": [
+        "cage-built"
+      ],
+      "not": {
+        "enum": [
+          "start",
+          "end"
+        ]
+      },
+      "pattern": "^[a-z0-9-]+$"
     },
     "Name": {
       "type": "string",
@@ -327,6 +374,19 @@
           "additionalProperties": false,
           "required": [
             "warp"
+          ]
+        },
+        {
+          "description": "Name this moment for the edit file, e.g. `cage-built`, and with `at`, a position on screen.",
+          "type": "object",
+          "properties": {
+            "mark": {
+              "$ref": "#/$defs/Mark"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark"
           ]
         }
       ]

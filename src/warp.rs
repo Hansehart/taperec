@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::recorder::{H264, MP4, QUIET};
-use crate::tape::{Point, Step};
+use crate::tape::{MarkName, Point, Step};
 
 /// One warped stretch of the capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,8 +56,19 @@ pub struct MarkedZoom {
     pub percent: u16,
 }
 
+/// A named moment of the recording, on the capture's clock, with the position found for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moment {
+    /// The tape's name for it.
+    pub name: String,
+    /// When it happened.
+    pub at: Duration,
+    /// Where its target was found, if it had one.
+    pub position: Option<Point>,
+}
+
 /// The size of the screen taperec records, in pixels.
-const SCREEN: (u32, u32) = (1920, 1080);
+pub(crate) const SCREEN: (u32, u32) = (1920, 1080);
 /// How long the view takes to ease from one zoom to the next.
 const ZOOM_EASE: Duration = Duration::from_millis(400);
 
@@ -70,6 +81,8 @@ pub struct Marks {
     pub bars: Vec<MarkedBar>,
     /// The changes of view, in order.
     pub zooms: Vec<MarkedZoom>,
+    /// The named moments, in order, from `start` to `end`.
+    pub moments: Vec<Moment>,
 }
 
 /// Collects warps and bar texts as the tape plays.
@@ -127,10 +140,20 @@ impl Timeline {
         });
     }
 
+    /// Names the moment `at`, found at `position` if it had a target.
+    pub fn moment(&mut self, name: &str, at: Duration, position: Option<Point>) {
+        self.marks.moments.push(Moment {
+            name: name.to_owned(),
+            at,
+            position,
+        });
+    }
+
     /// The marks, with a bar still showing at `end` ending there.
     #[must_use]
     pub fn finish(mut self, end: Duration) -> Marks {
         self.close_bar(end);
+        self.moment(MarkName::END, end, None);
         self.marks
     }
 
@@ -159,6 +182,26 @@ pub struct TimelineFile {
     /// The changes of view, in order; absent in timelines from before zoom.
     #[serde(default)]
     pub zooms: Vec<ZoomEntry>,
+    /// The named moments, in order; absent in timelines from before marks.
+    #[serde(default)]
+    pub marks: Vec<MarkEntry>,
+}
+
+/// One named moment in a timeline file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkEntry {
+    /// The tape's name for it.
+    pub name: String,
+    /// When it happened, in seconds since the Unix epoch, the clock the capture's frames carry.
+    #[serde(with = "epoch_seconds")]
+    pub at: Duration,
+    /// Where its target was found, in screen pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<u32>,
+    /// Where its target was found, in screen pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<u32>,
 }
 
 /// One change of view in a timeline file.
@@ -614,6 +657,20 @@ mod tests {
                 y: 300,
                 percent: 150,
             }],
+            marks: vec![
+                MarkEntry {
+                    name: "start".into(),
+                    at: epoch(1),
+                    x: None,
+                    y: None,
+                },
+                MarkEntry {
+                    name: "results".into(),
+                    at: epoch(40),
+                    x: Some(400),
+                    y: Some(300),
+                },
+            ],
         };
         let yaml = serde_saphyr::to_string(&file).unwrap();
         assert_eq!(

@@ -3,6 +3,7 @@
 pub mod app;
 pub mod cli;
 pub mod desktop;
+pub mod edit;
 pub mod motion;
 pub mod platform;
 pub mod process;

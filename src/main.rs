@@ -4,7 +4,7 @@ use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use taperec::{app, cli, tape};
+use taperec::{app, cli, edit, tape};
 
 fn main() -> ExitCode {
     match cli::parse(env::args_os().skip(1)) {
@@ -16,14 +16,24 @@ fn main() -> ExitCode {
             eprintln!("{}", cli::USAGE);
             ExitCode::SUCCESS
         }
-        Ok(cli::Invocation::Schema) => match io::stdout().write_all(tape::schema().as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("taperec: cannot write the schema: {error}");
-                ExitCode::FAILURE
+        Ok(cli::Invocation::Schema(kind)) => {
+            let schema = match kind {
+                cli::SchemaKind::Tape => tape::schema(),
+                cli::SchemaKind::Edit => edit::schema(),
+            };
+            match io::stdout().write_all(schema.as_bytes()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("taperec: cannot write the schema: {error}");
+                    ExitCode::FAILURE
+                }
             }
-        },
-        Ok(cli::Invocation::Render { timeline, out }) => match app::render(&timeline, &out) {
+        }
+        Ok(cli::Invocation::Render {
+            timeline,
+            edit,
+            out,
+        }) => match app::render(&timeline, &out, edit.as_deref()) {
             Ok(()) => {
                 eprintln!("taperec: wrote {}", out.display());
                 ExitCode::SUCCESS
