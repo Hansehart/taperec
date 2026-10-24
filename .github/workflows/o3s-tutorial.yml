@@ -54,7 +54,7 @@ jobs:
           tapes: examples/o3s/${{ matrix.part }}.yaml
           dock: Terminal
           from-source: "true"
-          # The o3s cube (o3s .github/assets/logo.png) centred on navy.
+          # The ASE ship (malea-docs authored/assets/ASE.png) centred on navy.
           wallpaper: examples/o3s/wallpaper.png
       - name: Diagnostics
         if: failure()
@@ -81,10 +81,14 @@ jobs:
       # Each part picks up where the one before left the desktop.
       - uses: $/
         with:
-          tapes: examples/o3s/*.yaml
+          # The tapes alone, in order; their edit files sit beside them.
+          tapes: |
+            examples/o3s/1-docker.yaml
+            examples/o3s/2-vscode.yaml
+            examples/o3s/3-cage.yaml
           dock: Terminal
           from-source: "true"
-          # The o3s cube (o3s .github/assets/logo.png) centred on navy.
+          # The ASE ship (malea-docs authored/assets/ASE.png) centred on navy.
           wallpaper: examples/o3s/wallpaper.png
       # The parts render alike, so their streams join without re-encoding.
       - name: Join the parts

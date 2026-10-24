@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=../../schema/taperec-edit.schema.json
+# Part 3's texts, speed-up and zoom, against the marks in 3-cage.yaml.
+tracks:
+  text:
+    - { text: "3/3 · Reopen o3s in its cage", from: start, until: end }
+    - { text: Only allowlisted hosts answer from inside the cage, from: curl, until: answered }
+    - { text: github.com is allowed · example.com is blocked, from: answered, until: end }
+  speed:
+    - { label: Building the cage, length: 5s, from: reopen, until: cage-built }
+    - { label: Starting the terminal, length: 2s, from: cage-built + 2s, until: curl - 1s }
+  zoom:
+    # The answers are the point of the tutorial: close in on the terminal.
+    - { point: { x: 850, y: 750 }, scale: 1.75, from: curl, until: end }

@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../schema/taperec-edit.schema.json
+# Part 1's texts, speed-ups and zooms, against the marks in 1-docker.yaml.
+tracks:
+  text:
+    - { text: "1/3 · Install Docker Desktop", from: start, until: end }
+  speed:
+    - { label: Downloading Docker Desktop, length: 2s, from: downloading, until: downloaded }
+    - { label: Installing Docker Desktop, length: 2s, from: installing, until: installed }
+    - { label: Starting Docker, length: 2s, from: starting, until: started }
+  zoom:
+    # Every click is zoomed in on, then out once its result shows.
+    - { at: terminal-icon, from: terminal-icon, until: terminal-open }

@@ -113,7 +113,9 @@ fn example_tapes_are_valid() -> TestResult {
     let mut tapes = Vec::new();
     for entry in fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/o3s"))? {
         let path = entry?.path();
-        if path.extension().is_some_and(|e| e == "yaml") {
+        // Edit files are checked through the tapes that name them.
+        let edit = path.to_string_lossy().ends_with(".edit.yaml");
+        if path.extension().is_some_and(|e| e == "yaml") && !edit {
             tapes.push(
                 path.into_os_string()
                     .into_string()
