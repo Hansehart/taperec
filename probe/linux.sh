@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux desktop probe: probe/linux.sh desktop|keys|controls|capture|docker OUT
+# Linux desktop probe: probe/linux.sh desktop|keys|controls|window-at|capture|docker OUT
 set -uo pipefail
 mode=$1 out=$2
 mkdir -p "$out"
@@ -14,7 +14,7 @@ desktop() {
     sudo apt-get update -qq
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
         xvfb xfce4 xfce4-terminal xdotool xclip wmctrl at-spi2-core ffmpeg zenity python3-pyatspi \
-        dbus-x11 x11-utils libatk-adaptor > "$out/apt.log" 2>&1
+        dbus-x11 x11-utils libatk-adaptor python3-gi gir1.2-gtk-3.0 > "$out/apt.log" 2>&1
     echo "SUMMARY apt install: $(since "$t")"
     t=$(now)
     export DISPLAY=:99
@@ -89,72 +89,154 @@ keys() {
     echo "SUMMARY paste: $(missing "$out/want-paste" /tmp/typed-paste)"
 }
 
-controls() {
-    local t pid x y w h code
-    zenity --question --title "taperec probe" --text "Click Yes" &
-    pid=$!
-    t=$(now)
-    for _ in $(seq 100); do wmctrl -l | grep -q 'taperec probe' && break; sleep 0.1; done
-    echo "SUMMARY window listed: $(wmctrl -l | grep -c 'taperec probe') after $(since "$t")"
-    wmctrl -a 'taperec probe'; sleep 0.5
-    echo "SUMMARY focus: active window is '$(xdotool getactivewindow getwindowname)'"
-    t=$(now)
-    read -r x y w h < <(python3 - <<'PY'
-import pyatspi
-def walk(node, depth=0):
-    if depth > 12 or node is None:
+# A GTK 3 window titled $1 at (300, 200), 400x200, whose Yes button prints "yes" and quits.
+gtk3_window() {
+    python3 - "$1" <<'PY' &
+import sys, gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+window = Gtk.Window(title=sys.argv[1])
+window.set_default_size(400, 200)
+window.move(300, 200)
+button = Gtk.Button(label="Yes")
+def clicked(_):
+    print("yes", flush=True)
+    Gtk.main_quit()
+button.connect("clicked", clicked)
+window.add(button)
+window.show_all()
+Gtk.main()
+PY
+}
+
+# Waits until a window titled $1 is listed, printing its X11 id.
+window_id() {
+    for _ in $(seq 100); do
+        wmctrl -l | awk -v t="$1" '{ id = $1; $1 = $2 = $3 = ""; sub(/^ +/, ""); if ($0 == t) print id }' | grep . && return
+        sleep 0.1
+    done
+    return 1
+}
+
+# The absolute upper-left corner and size of X11 window $1: "x y w h".
+x11_frame() {
+    xwininfo -id "$1" | awk '
+        /Absolute upper-left X/ { x = $NF } /Absolute upper-left Y/ { y = $NF }
+        /^ *Width/ { w = $NF } /^ *Height/ { h = $NF } END { print x, y, w, h }'
+}
+
+# The AT-SPI tree of the app showing a window titled $1, into $2; then the Yes button as
+# "dx dy dw dh wx wy": its extents in desktop and in window coordinates.
+atspi_yes() {
+    python3 - "$1" "$2" <<'PY'
+import sys, pyatspi
+title, dump = sys.argv[1], open(sys.argv[2], "w")
+found = None
+def extents(node, kind):
+    e = node.queryComponent().getExtents(kind)
+    return e.x, e.y, e.width, e.height
+def walk(node, depth):
+    global found
+    if node is None or depth > 12:
         return
     try:
-        if node.getRole() == pyatspi.ROLE_PUSH_BUTTON and node.name in ("Yes", "_Yes"):
-            e = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-            print(e.x, e.y, e.width, e.height)
-            raise SystemExit
+        role, name = node.getRoleName(), node.name
+        try:
+            desk, win = extents(node, pyatspi.DESKTOP_COORDS), extents(node, pyatspi.WINDOW_COORDS)
+        except Exception:
+            desk = win = None
+        print(f"{'  ' * depth}{role} {name!r} desktop={desk} window={win}", file=dump)
+        if found is None and node.getRole() == pyatspi.ROLE_PUSH_BUTTON and name in ("Yes", "_Yes") and desk:
+            found = desk + win[:2]
         for child in node:
             walk(child, depth + 1)
-    except SystemExit:
-        raise
-    except Exception:
-        pass
+    except Exception as error:
+        print(f"{'  ' * depth}! {error}", file=dump)
 for app in pyatspi.Registry.getDesktop(0):
-    walk(app)
+    if any(getattr(w, "name", "") == title for w in app):
+        walk(app, 0)
+if found:
+    print(*found)
 PY
-)
-    echo "SUMMARY AT-SPI Yes button: ${x:-?} ${y:-?} ${w:-?} ${h:-?} after $(since "$t")"
-    shot controls
-    if [ -n "${x:-}" ]; then
-        xdotool mousemove $((x + w / 2)) $((y + h / 2)) click 1
-    fi
-    for _ in $(seq 50); do kill -0 "$pid" 2> /dev/null || break; sleep 0.1; done
-    wait "$pid"; code=$?
-    echo "SUMMARY click: zenity exited $code (0 = Yes clicked)"
+}
+
+# Finds the Yes button of a window titled $1 ($2 names its toolkit) and clicks it by window
+# coordinates plus the X11 window's position; prints what each coordinate route gives.
+click_yes() {
+    local title=$1 kit=$2 id fx fy fw fh dx dy dw dh wx wy t
+    id=$(window_id "$title") || { echo "SUMMARY $kit: no window titled $title"; return; }
+    read -r fx fy fw fh < <(x11_frame "$id")
+    echo "SUMMARY $kit window: id $id at $fx,$fy ${fw}x$fh, frame extents $(xprop -id "$id" _GTK_FRAME_EXTENTS 2>/dev/null | sed 's/.*= //')"
+    t=$(now)
+    read -r dx dy dw dh wx wy < <(atspi_yes "$title" "$out/atspi-$kit.txt")
+    echo "SUMMARY $kit Yes: desktop ${dx:-?},${dy:-?} ${dw:-?}x${dh:-?}; window ${wx:-?},${wy:-?}; after $(since "$t")"
+    [ -n "${wx:-}" ] || return
+    echo "SUMMARY $kit routes: desktop centre $((dx + dw / 2)),$((dy + dh / 2)); window + X11 $((fx + wx + dw / 2)),$((fy + wy + dh / 2))"
+    shot "controls-$kit"
+    xdotool mousemove $((fx + wx + dw / 2)) $((fy + wy + dh / 2)) click 1
+}
+
+controls() {
+    local zenity code
+    zenity --question --title "taperec probe" --text "Click Yes" --timeout 30 &
+    zenity=$!
+    gtk3_window "taperec gtk3" > "$out/gtk3.txt"
+    sleep 2
+    click_yes "taperec probe" gtk4
+    for _ in $(seq 50); do kill -0 "$zenity" 2> /dev/null || break; sleep 0.1; done
+    wait "$zenity"; code=$?
+    echo "SUMMARY gtk4 click: zenity exited $code (0 = Yes clicked, 5 = timed out)"
+    click_yes "taperec gtk3" gtk3
+    sleep 1
+    echo "SUMMARY gtk3 click: the window printed '$(cat "$out/gtk3.txt")' (yes = clicked)"
+}
+
+window_at() {
+    local id fx fy fw fh WINDOW X Y SCREEN
+    gtk3_window "taperec window" > /dev/null
+    id=$(window_id "taperec window") || { echo "SUMMARY window-at: no window"; return; }
+    sleep 1
+    read -r fx fy fw fh < <(x11_frame "$id")
+    eval "$(xdotool mousemove $((fx + fw / 2)) $((fy + fh / 2)) getmouselocation --shell)"
+    echo "SUMMARY window-at: under $X,$Y is $WINDOW '$(xdotool getwindowname "$WINDOW" 2>&1)' at $(x11_frame "$WINDOW"); the window is $id at $fx $fy $fw $fh"
+    # Over the bare desktop, the window under the pointer is the desktop's.
+    eval "$(xdotool mousemove 1800 900 getmouselocation --shell)"
+    echo "SUMMARY window-at desktop: under $X,$Y is $WINDOW '$(xdotool getwindowname "$WINDOW" 2>&1)' at $(x11_frame "$WINDOW")"
 }
 
 capture() {
-    local t start
+    local t start pid code
     xfce4-terminal --disable-server -e "sh -c 'while :; do date; ls -la /usr/bin | head -40; done'" &
     sleep 3
     ( while :; do ps -C ffmpeg -o %cpu= | awk '{ s += $1 } END { print s + 0 }'; sleep 2; done ) > "$out/cpu.txt" &
     local sampler=$!
+    # Stopped with `q` on stdin, as taperec stops its captures.
+    mkfifo "$out/control"
     t=$(now)
     ffmpeg -v error -y -use_wallclock_as_timestamps 1 -f x11grab -framerate 30 -video_size 1920x1080 -i "$DISPLAY" \
-        -t 60 -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -tune zerolatency \
-        -copyts -flush_packets 1 -f matroska -live 1 -cluster_time_limit 1000 "$out/capture.mkv" < /dev/null
+        -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -tune zerolatency \
+        -copyts -flush_packets 1 -f matroska -live 1 -cluster_time_limit 1000 "$out/capture.mkv" < "$out/control" &
+    pid=$!
+    exec 3> "$out/control"
+    sleep 60
+    echo q >&3
+    exec 3>&-
+    wait "$pid"; code=$?
     kill "$sampler"
     start=$(ffprobe -v error -show_entries format=start_time -of csv=p=0 "$out/capture.mkv")
-    echo "SUMMARY capture: $(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$out/capture.mkv") frames in 60 s, start_time $start vs launch $t, ffmpeg CPU $(awk '{ s += $1; n++ } END { printf "%.0f%%", s / n }' "$out/cpu.txt") on $(nproc) cores"
-    ffmpeg -v error -y -use_wallclock_as_timestamps 1 -f x11grab -framerate 30 -video_size 1920x1080 -i "$DISPLAY" \
-        -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -tune zerolatency \
-        -copyts -flush_packets 1 -f matroska -live 1 -cluster_time_limit 1000 "$out/killed.mkv" < /dev/null &
-    local pid=$!
-    sleep 10; kill -9 "$pid"; wait "$pid" 2> /dev/null
-    ffmpeg -v error -i "$out/killed.mkv" -f null - 2> "$out/killed-decode.txt"
-    echo "SUMMARY killed capture: $(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$out/killed.mkv") frames readable after 10 s, decode errors: $(grep -c . "$out/killed-decode.txt")"
+    local frames seconds
+    frames=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$out/capture.mkv")
+    seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out/capture.mkv")
+    ffmpeg -v error -i "$out/capture.mkv" -f null - 2> "$out/capture-decode.txt"
+    echo "SUMMARY capture stopped with q: exit $code, $frames frames in ${seconds}s ($(awk -v f="$frames" -v s="$seconds" 'BEGIN { printf "%.1f", f / s }') fps), first frame $(awk -v a="$start" -v b="$t" 'BEGIN { printf "%+.3f", a - b }') s after launch, decode errors $(grep -c . "$out/capture-decode.txt"), ffmpeg CPU $(awk '{ s += $1; n++ } END { printf "%.0f%%", s / n }' "$out/cpu.txt") on $(nproc) cores"
 }
 
 docker_cage() {
     local t
     t=$(now)
     docker info > /dev/null && echo "SUMMARY docker info: $(since "$t")"
+    # The tutorial's cage: o3s without its optional features.
+    python3 examples/o3s/no-features.py o3s/.devcontainer/devcontainer.json
     t=$(now)
     npx -y @devcontainers/cli@latest up --workspace-folder o3s > "$out/cage.log" 2>&1
     echo "SUMMARY cage up: exit $? after $(since "$t")"
@@ -165,6 +247,7 @@ case $mode in
     desktop) desktop ;;
     keys) keys ;;
     controls) controls ;;
+    window-at) window_at ;;
     capture) capture ;;
     docker) docker_cage ;;
 esac
