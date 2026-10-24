@@ -5,6 +5,7 @@ pub mod cli;
 pub mod desktop;
 pub mod edit;
 pub mod motion;
+pub mod overlay;
 pub mod platform;
 pub mod process;
 pub mod recorder;

@@ -1,6 +1,5 @@
 //! Ties parsing, desktop playback and recording together.
 
-use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,10 +13,7 @@ use crate::platform::macos::{Capture, Helper, ScreenRecorder};
 use crate::platform::{Platform, Recorder};
 use crate::process::SystemRunner;
 use crate::recorder::FPS;
-use crate::{desktop, edit, recorder, tape, warp};
-
-/// The program that renders a caption to a PNG: `taperec-caption <text> <out.png>`.
-const CAPTION_TOOL: &str = "taperec-caption";
+use crate::{desktop, edit, overlay, recorder, tape, warp};
 
 /// Why a recording failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,8 +34,8 @@ pub enum AppError {
     },
     /// A host other than macOS, by OS name.
     NotMacOs(String),
-    /// A failure creating the output directory.
-    OutDir {
+    /// A directory that cannot be created: the output directory, or one for render's intermediate files.
+    CreateDir {
         /// The directory.
         path: PathBuf,
         /// The I/O error.
@@ -51,17 +47,11 @@ pub enum AppError {
     Record(recorder::Error),
     /// A failure building the warp graph.
     Warp(warp::Error),
-    /// A failure rendering a warp caption image.
-    Caption(recorder::Error),
+    /// Drawing an overlay image failed.
+    Overlay(overlay::Error),
     /// Rendering the warped video failed.
     Render(recorder::Error),
-    /// A drawn overlay image that cannot be put in place.
-    Image {
-        /// The image path.
-        path: PathBuf,
-        /// The I/O error.
-        detail: String,
-    },
+
     /// A timeline file that cannot be read or written.
     Timeline {
         /// The timeline path.
@@ -91,18 +81,17 @@ impl fmt::Display for AppError {
                 f,
                 "taperec records the macOS desktop, not {os}; render tapes with the render workflow on GitHub Actions"
             ),
-            Self::OutDir { path, detail } => {
+            Self::CreateDir { path, detail } => {
                 write!(f, "cannot create {}: {detail}", path.display())
             }
             Self::Desktop(error) => error.fmt(f),
             Self::Record(error) => error.fmt(f),
             Self::Warp(error) => error.fmt(f),
-            Self::Caption(error) => write!(f, "rendering a warp caption failed: {error}"),
+            Self::Overlay(error) => error.fmt(f),
             Self::Render(error) => write!(f, "rendering warps failed: {error}"),
             Self::Timeline { path, detail } => {
                 write!(f, "timeline {}: {detail}", path.display())
             }
-            Self::Image { path, detail } => write!(f, "cannot place {}: {detail}", path.display()),
         }
     }
 }
@@ -176,13 +165,13 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
     if os != "macos" {
         return Err(AppError::NotMacOs(os.to_owned()));
     }
-    fs::create_dir_all(&args.out_dir).map_err(|e| AppError::OutDir {
+    fs::create_dir_all(&args.out_dir).map_err(|e| AppError::CreateDir {
         path: args.out_dir.clone(),
         detail: e.to_string(),
     })?;
 
     let path = args.out_dir.join(tape.output.as_str());
-    // The raw capture, timeline and captions stay next to the video, for `taperec render`.
+    // The raw capture and timeline stay next to the video, for `taperec render`.
     let stem = tape.output.as_str().trim_end_matches(".mp4");
     let mut helper = Helper::new(SystemRunner::default());
     // Software H.264 in VideoToolbox costs about three times libx264's CPU.
@@ -207,7 +196,7 @@ pub fn record(args: &Args, os: &str) -> Result<PathBuf, AppError> {
         args.failshot.as_deref(),
     )?;
     let timeline_path = args.out_dir.join(format!("{stem}.timeline.yaml"));
-    save_timeline(&timeline_path, stem, &video, marks)?;
+    save_timeline(&timeline_path, &video, marks)?;
     render(&timeline_path, &path, edit.as_deref())?;
     Ok(path)
 }
@@ -275,29 +264,25 @@ pub fn capture<P: Platform, R: Recorder>(
     Ok(marks)
 }
 
-/// Writes the timeline file naming the warps, bar texts, zooms and their image files; `render` draws the images.
-fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Result<(), AppError> {
+/// Writes the timeline file: what capture saw, for `render` to build the video from.
+fn save_timeline(path: &Path, video: &str, marks: warp::Marks) -> Result<(), AppError> {
     let warps = marks
         .warps
         .into_iter()
-        .enumerate()
-        .map(|(index, mark)| warp::WarpEntry {
+        .map(|mark| warp::WarpEntry {
             label: mark.label,
             start: mark.span.start,
             end: mark.span.end,
             length: mark.span.length,
-            caption: format!("{stem}.warp{index}.png"),
         })
         .collect();
     let bars = marks
         .bars
         .into_iter()
-        .enumerate()
-        .map(|(index, bar)| warp::BarEntry {
+        .map(|bar| warp::BarEntry {
             text: bar.text,
             start: bar.start,
             end: bar.end,
-            image: format!("{stem}.bar{index}.png"),
         })
         .collect();
     let zooms = marks
@@ -335,8 +320,8 @@ fn save_timeline(path: &Path, stem: &str, video: &str, marks: warp::Marks) -> Re
     fs::write(path, text).map_err(|e| timeline_error(e.to_string()))
 }
 
-/// Builds the video at `out` from a recording's timeline file, its raw capture and captions, with the `edit`
-/// file on top if given; needs ffmpeg only.
+/// Builds the video at `out` from a recording's timeline file and raw capture, with the `edit` file on top if
+/// given; draws its overlays itself and needs only ffmpeg, on any machine.
 ///
 /// # Errors
 ///
@@ -351,16 +336,11 @@ pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), Ap
     let mut file: warp::TimelineFile =
         serde_saphyr::from_str(&text).map_err(|e| timeline_error(e.to_string()))?;
     if let Some(path) = edit {
-        let name = timeline
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        let stem = name.strip_suffix(".timeline.yaml").unwrap_or(name);
         let parse_error = |error| AppError::Parse {
             path: path.to_owned(),
             error,
         };
-        file = edit::apply(&parse_file(path, edit::parse)?, file, stem).map_err(parse_error)?;
+        file = edit::apply(&parse_file(path, edit::parse)?, file).map_err(parse_error)?;
     }
     let dir = timeline.parent().unwrap_or(Path::new("."));
     let capture = dir.join(&file.video);
@@ -370,61 +350,49 @@ pub fn render(timeline: &Path, out: &Path, edit: Option<&Path>) -> Result<(), Ap
         return recorder::encode("ffmpeg", &recorder::remux_args(&capture, out), out)
             .map_err(AppError::Render);
     }
-    // Overlays come from the timeline's texts, so an edited timeline renders its new texts.
-    for warp in &warps {
-        let text = warp::caption(&warp.label, warp.end.saturating_sub(warp.start));
-        draw(
-            CAPTION_TOOL,
-            &[OsString::from(text)],
-            &dir.join(&warp.caption),
-        )?;
-    }
-    for bar in &file.bars {
-        let args = [OsString::from("--bar"), OsString::from(&bar.text)];
-        draw(CAPTION_TOOL, &args, &dir.join(&bar.image))?;
-    }
     let start = recorder::probe_start("ffprobe", &capture)?;
-    let zeroed = std::env::temp_dir().join(format!("taperec-{}-zeroed.mp4", process::id()));
+    // Overlays and the zeroed capture are drawn fresh for each render and go with it.
+    let scratch = std::env::temp_dir().join(format!("taperec-render-{}", process::id()));
+    fs::create_dir_all(&scratch).map_err(|e| AppError::CreateDir {
+        path: scratch.clone(),
+        detail: e.to_string(),
+    })?;
     let rendered = (|| {
+        // Warp captions first, then bars, as the graph numbers its inputs.
+        let mut images = Vec::new();
+        for (index, warp) in warps.iter().enumerate() {
+            let runs = warp::caption(&warp.label, warp.end.saturating_sub(warp.start));
+            let image = scratch.join(format!("warp{index}.png"));
+            overlay::write_png(&overlay::caption(&runs)?, &image)?;
+            images.push(image);
+        }
+        for (index, bar) in file.bars.iter().enumerate() {
+            let image = scratch.join(format!("bar{index}.png"));
+            overlay::write_png(
+                &overlay::bar(&[overlay::Run::Text(bar.text.clone())])?,
+                &image,
+            )?;
+            images.push(image);
+        }
+        let zeroed = scratch.join("zeroed.mp4");
         recorder::encode("ffmpeg", &recorder::remux_args(&capture, &zeroed), &zeroed)
             .map_err(AppError::Render)?;
         let spans = warp::spans(&warps, start);
         let bars = warp::bar_spans(&file.bars, start);
         let zooms = warp::zoom_views(&file.zooms, start);
-        // Warp captions first, then bar images, as the graph numbers its inputs.
-        let images: Vec<PathBuf> = warps
-            .iter()
-            .map(|w| dir.join(&w.caption))
-            .chain(file.bars.iter().map(|b| dir.join(&b.image)))
-            .collect();
         let graph = warp::filter_graph(&spans, &bars, &zooms, FPS).map_err(AppError::Warp)?;
         let args = warp::render_args(&zeroed, &images, &graph, out);
         recorder::encode("ffmpeg", &args, out).map_err(AppError::Render)
     })();
-    remove(&zeroed);
+    // Best effort; the render's own result is the one reported.
+    let _ = fs::remove_dir_all(&scratch);
     rendered
 }
 
-/// Draws an overlay image with `program args… <image>`; without the program, e.g. off macOS, an image drawn
-/// before is kept.
-fn draw(program: &str, args: &[OsString], image: &Path) -> Result<(), AppError> {
-    // Drawn aside, so a failure never removes an image drawn before.
-    let fresh = image.with_extension("new.png");
-    let mut args = args.to_vec();
-    args.push(fresh.clone().into_os_string());
-    match recorder::encode(program, &args, &fresh) {
-        Ok(()) => fs::rename(&fresh, image).map_err(|e| AppError::Image {
-            path: image.to_owned(),
-            detail: e.to_string(),
-        }),
-        Err(recorder::Error::Spawn { .. }) if image.exists() => Ok(()),
-        Err(error) => Err(AppError::Caption(error)),
+impl From<overlay::Error> for AppError {
+    fn from(error: overlay::Error) -> Self {
+        Self::Overlay(error)
     }
-}
-
-/// Deletes an intermediate file, best effort.
-fn remove(path: &Path) {
-    let _ = fs::remove_file(path);
 }
 
 #[cfg(test)]
@@ -494,56 +462,6 @@ mod tests {
         );
     }
 
-    /// A `sh -c` tool drawing `script` with the image path as `$0`.
-    fn tool(script: &str) -> [OsString; 2] {
-        [OsString::from("-c"), OsString::from(script)]
-    }
-
-    fn image(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("taperec-draw-{}-{name}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        dir.join("bar0.png")
-    }
-
-    #[test]
-    fn draw_replaces_an_image_with_a_fresh_one() {
-        let path = image("fresh");
-        fs::write(&path, "old").unwrap();
-        draw("sh", &tool("echo new > \"$0\""), &path).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
-    }
-
-    #[test]
-    fn without_the_tool_an_image_drawn_before_is_kept() {
-        let path = image("kept");
-        fs::write(&path, "drawn on a Mac").unwrap();
-        draw("/nonexistent/taperec-caption", &[], &path).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "drawn on a Mac");
-    }
-
-    #[test]
-    fn without_the_tool_or_an_image_drawing_fails() {
-        let path = image("missing");
-        let _ = fs::remove_file(&path);
-        let err = draw("/nonexistent/taperec-caption", &[], &path).unwrap_err();
-        assert!(
-            matches!(err, AppError::Caption(recorder::Error::Spawn { .. })),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn a_failing_tool_leaves_the_image_drawn_before() {
-        let path = image("failing");
-        fs::write(&path, "old").unwrap();
-        let err = draw("sh", &tool("exit 3"), &path).unwrap_err();
-        assert!(
-            matches!(err, AppError::Caption(recorder::Error::Exit { .. })),
-            "{err:?}"
-        );
-        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
-    }
-
     #[test]
     fn the_timeline_is_saved_without_drawing_anything() {
         let dir = std::env::temp_dir().join(format!("taperec-save-{}", std::process::id()));
@@ -557,10 +475,10 @@ mod tests {
             ..warp::Marks::default()
         };
         let path = dir.join("t.timeline.yaml");
-        save_timeline(&path, "t", "t.raw.mkv", marks).unwrap();
+        save_timeline(&path, "t.raw.mkv", marks).unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("image: t.bar0.png"), "{text}");
-        assert!(!dir.join("t.bar0.png").exists());
+        assert!(text.contains("text: Part 1"), "{text}");
+        assert!(!text.contains(".png"), "{text}");
     }
 
     #[test]

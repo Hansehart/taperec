@@ -1,6 +1,6 @@
 name: check
 
-# Runs the pre-commit hooks and the minimum Rust version check.
+# Runs the pre-commit hooks, the minimum Rust version check and a render off macOS.
 on:
   push:
     branches: [main]
@@ -29,3 +29,17 @@ jobs:
         with:
           persist-credentials: false
       - run: ./msrv.sh
+
+  # Render needs no Mac: a synthetic capture and an edit file render and check out on Linux.
+  render:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - name: Build taperec
+        run: cargo build --locked
+      - name: Render and check
+        run: tests/render.sh target/debug/taperec "$RUNNER_TEMP/render"
