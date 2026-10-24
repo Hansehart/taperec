@@ -29,7 +29,10 @@ steps:
       length: 2s
       steps:
         - waitUntil:
-            command: test -x /Applications/Docker.app/Contents/Resources/bin/docker && ! test -d /Volumes/Docker
+            # The volume goes before `hdiutil` exits; typing earlier would go to it, not the shell.
+            command: >-
+              test -x /Applications/Docker.app/Contents/Resources/bin/docker && ! test -d /Volumes/Docker &&
+              ! pgrep -x hdiutil
             timeout: 4m
   # The CLI's start can wrongly report a running Docker Desktop right after installing, so open the app.
   - paste: open /Applications/Docker.app
