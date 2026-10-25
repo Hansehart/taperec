@@ -4,9 +4,9 @@
   "description": "An edit file: items on tracks, each placed against the recording's marks.",
   "type": "object",
   "properties": {
-    "layout": {
-      "description": "Where each kind of overlay settles after its announcement in the centre; `{ text: top-left, effects:\ntop-right, keys: bottom }` unless given.",
-      "$ref": "#/$defs/Layout"
+    "bar": {
+      "description": "Where the bar sits and how long a chapter's card holds; `{ at: top, offset: 0, card: 2s }` unless given.",
+      "$ref": "#/$defs/BarSettings"
     },
     "tracks": {
       "description": "The tracks; within one, a later item lies on top of an earlier one.",
@@ -15,6 +15,27 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "BarSettings": {
+      "description": "Where the bar sits, and how long each new chapter's card holds the video.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "The screen's edge the bar sits along.",
+          "$ref": "#/$defs/Edge"
+        },
+        "card": {
+          "description": "How long a new chapter's card holds the video before it moves into the bar; `0s` shows no cards.",
+          "$ref": "#/$defs/Duration"
+        },
+        "offset": {
+          "description": "Its distance from that edge, in pixels, e.g. to clear the Dock at the bottom.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "Duration": {
       "description": "A duration: whole milliseconds like `500ms`, or seconds or minutes like `1.5s` or `2m`.",
       "type": "string",
@@ -25,24 +46,39 @@
       ],
       "pattern": "^([0-9]+ms|[0-9]+(\\.[0-9]+)?[sm])$"
     },
-    "Layout": {
-      "description": "Where each kind of overlay settles; the centre is where texts and effects announce themselves first.",
+    "Edge": {
+      "description": "An edge of the screen.",
+      "oneOf": [
+        {
+          "description": "The top, over the macOS menu bar.",
+          "type": "string",
+          "const": "top"
+        },
+        {
+          "description": "The bottom.",
+          "type": "string",
+          "const": "bottom"
+        }
+      ]
+    },
+    "HoldItem": {
+      "description": "The video held still at a moment for a while.",
       "type": "object",
       "properties": {
-        "effects": {
-          "description": "The running speed-ups and zooms: what is happening.",
-          "$ref": "#/$defs/Position"
+        "at": {
+          "description": "The moment held.",
+          "$ref": "#/$defs/Moment"
         },
-        "keys": {
-          "description": "The shortcuts, shown on press and never announced.",
-          "$ref": "#/$defs/Position"
-        },
-        "text": {
-          "description": "The texts: where we are.",
-          "$ref": "#/$defs/Position"
+        "duration": {
+          "description": "How long it holds.",
+          "$ref": "#/$defs/Duration"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "duration"
+      ]
     },
     "MarkRef": {
       "type": "string",
@@ -88,17 +124,6 @@
       "required": [
         "x",
         "y"
-      ]
-    },
-    "Position": {
-      "type": "string",
-      "enum": [
-        "top-left",
-        "top-right",
-        "bottom-left",
-        "bottom-right",
-        "bottom",
-        "off"
       ]
     },
     "SpeedItem": {
@@ -156,7 +181,7 @@
       "type": "string"
     },
     "TextItem": {
-      "description": "A text shown from `from` until `until`, or for `duration`.",
+      "description": "A chapter or comment shown from `from` until `until`, or for `duration`.",
       "type": "object",
       "properties": {
         "duration": {
@@ -205,18 +230,32 @@
       "description": "The tracks of an edit.",
       "type": "object",
       "properties": {
-        "speed": {
-          "description": "Stretches fast-forwarded, announced and then kept in their corner; they must not overlap.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/SpeedItem"
-          }
-        },
-        "text": {
-          "description": "Texts, announced in the centre and then kept in their corner; `\"\"` hides what lies beneath.",
+        "chapter": {
+          "description": "Where we are: each new chapter shows on a card, then in the bar; `\"\"` hides what lies beneath.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/TextItem"
+          }
+        },
+        "comment": {
+          "description": "What to notice now, in the bar's middle; `\"\"` hides what lies beneath.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TextItem"
+          }
+        },
+        "hold": {
+          "description": "Frames held still for reading time; never within a speed-up.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HoldItem"
+          }
+        },
+        "speed": {
+          "description": "Stretches fast-forwarded, named in the bar while they play; they must not overlap.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SpeedItem"
           }
         },
         "zoom": {

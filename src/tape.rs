@@ -332,8 +332,8 @@ pub enum Step {
     Type(String),
     /// Put text on the clipboard and paste it with a single keystroke.
     Paste(String),
-    /// Show text from here on, announced in the centre and then kept in its corner; empty hides it.
-    Text(String),
+    /// Start a chapter from here on, shown on a card and then in the bar; empty ends it.
+    Chapter(String),
     /// Zoom the video onto a target from here on, or back to the full screen with `None`.
     Zoom(Option<(Target, ZoomScale)>),
     /// Press a key chord.
@@ -844,13 +844,13 @@ steps:
     #[test]
     fn text_sets_or_clears_what_shows() {
         assert_eq!(
-            steps("  - text: Part 1 · Docker\n  - text: \"\"\n"),
+            steps("  - chapter: Part 1 · Docker\n  - chapter: \"\"\n"),
             vec![
-                Step::Text("Part 1 · Docker".into()),
-                Step::Text(String::new())
+                Step::Chapter("Part 1 · Docker".into()),
+                Step::Chapter(String::new())
             ]
         );
-        let err = error("  - text: \"one\\ntwo\"\n");
+        let err = error("  - chapter: \"one\\ntwo\"\n");
         assert!(err.message.contains("control characters"), "{err}");
     }
 

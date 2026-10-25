@@ -86,7 +86,7 @@ impl<P: Platform> Desktop<P> {
             // Warps, bars, zooms and marks mark the recording; the caller times them.
             Step::Warp { .. }
             | Step::EndWarp
-            | Step::Text(_)
+            | Step::Chapter(_)
             | Step::Zoom(_)
             | Step::Mark { .. } => {}
             Step::Type(text) => self.type_text(text)?,

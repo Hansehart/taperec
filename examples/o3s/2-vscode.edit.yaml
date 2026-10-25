@@ -1,8 +1,9 @@
 # yaml-language-server: $schema=../../schema/taperec-edit.schema.json
-# Part 2's texts, speed-ups and zooms, against the marks in 2-vscode.yaml.
+# Part 2's chapter, comment, speed-ups and zooms, against the marks in 2-vscode.yaml.
 tracks:
-  text:
+  chapter:
     - { text: "2/3 · Install VS Code and Dev Containers, clone o3s", from: start, until: end }
+  comment:
     - { text: macOS asks once before opening an app from the internet, from: open-button, until: o3s-open }
   speed:
     - { label: Installing VS Code, length: 2s, from: vscode-installing, until: vscode-installed }

@@ -64,9 +64,8 @@ enum DocStep {
     ),
     /// Change the speed of the steps that follow.
     Set(Set),
-    /// Show this text from here on, announced in the centre and then kept in its corner, e.g.
-    /// `Part 1 · Docker`; `""` hides it.
-    Text(Text),
+    /// Start a chapter from here on, e.g. `Part 1 · Docker`: shown on a card, then in the bar; `""` ends it.
+    Chapter(Text),
     /// Zoom the video onto a target from here on, or back out with `off`.
     Zoom(DocZoomStep),
     /// Play the nested steps fast-forwarded into `length` under a caption.
@@ -559,7 +558,7 @@ fn lower_steps(
             DocStep::MoveTo(target) => out.push(Step::MoveTo(lower_target(target, &path)?)),
             DocStep::Type(text) => out.push(Step::Type(text)),
             DocStep::Paste(text) => out.push(Step::Paste(text)),
-            DocStep::Text(Text(text)) => out.push(Step::Text(text)),
+            DocStep::Chapter(Text(text)) => out.push(Step::Chapter(text)),
             DocStep::Zoom(DocZoomStep::Off) => out.push(Step::Zoom(None)),
             DocStep::Zoom(DocZoomStep::On(zoom)) => {
                 let scale = match zoom.scale {
