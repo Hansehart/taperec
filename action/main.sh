@@ -109,17 +109,26 @@ app_path() {
     bail "no app named $1"
 }
 
-# Tells whether a target's runners need the icon agent switched off.
+# Tells whether a target's runners need the icon agent fixed.
 crashing_icon_agent() {
     [ "$1" = x86_64-apple-darwin ]
 }
 
-# Switches off the per-user icon agent so app launches get a generic icon instead of waiting on it (actions/runner-images#14751).
-icon_agent_off() {
-    local label
-    label="gui/$(id -u)/com.apple.iconservices.iconservicesagent"
+# Restarts the per-user icon agent with Metal logging, rather than aborting on, the missing slice of its shader
+# archive for the runner's paravirtualized GPU; RenderBox then compiles the shader and app icons render
+# (actions/runner-images#14751).
+icon_agent_fix() {
+    local name=com.apple.iconservices.iconservicesagent plist label
+    plist="${TMPDIR:-/tmp}/taperec-$name.plist"
+    label="gui/$(id -u)/$name"
+    plutil -convert xml1 -o "$plist" "/System/Library/LaunchAgents/$name.plist" ||
+        bail "could not copy the icon agent's definition"
+    plutil -remove EnvironmentVariables "$plist" 2> /dev/null || true
+    plutil -insert EnvironmentVariables -json '{"MTL_ERROR_MODE":"nslog"}' "$plist" ||
+        bail "could not set the icon agent's environment"
     limited 30 launchctl bootout "$label" || true
-    limited 30 launchctl disable "$label" || bail "could not switch off the icon agent"
+    limited 30 launchctl enable "$label" || bail "could not enable the icon agent"
+    limited 30 launchctl bootstrap "gui/$(id -u)" "$plist" || bail "could not restart the icon agent"
 }
 
 # Waits up to a minute for a Dock other than the given pid to list its items, keeping a screenshot when none does.
@@ -157,7 +166,7 @@ prepare_desktop() {
     local dock=$1 target=$2 out=$3 background=$4 id bounds wallpaper app old arg
     local -a input=()
     if crashing_icon_agent "$target"; then
-        icon_agent_off
+        icon_agent_fix
     fi
     id=$(displayplacer list | awk '/^Persistent screen id:/ { print $4; exit }')
     displayplacer "id:$id res:1920x1080 scaling:off"

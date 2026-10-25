@@ -55,15 +55,22 @@ check "Intel target" "x86_64-apple-darwin" "$(target_triple X64)"
 check "other architectures are refused" "::error::taperec builds for ARM64 and X64 Macs, not ARM" \
     "$( (target_triple ARM) 2>&1 || true)"
 
-check "Intel runners switch off the icon agent" "yes" "$(crashing_icon_agent x86_64-apple-darwin && echo yes)"
-check "Apple silicon keeps the icon agent" "no" "$(crashing_icon_agent aarch64-apple-darwin || echo no)"
+check "Intel runners fix the icon agent" "yes" "$(crashing_icon_agent x86_64-apple-darwin && echo yes)"
+check "Apple silicon keeps the icon agent as it is" "no" "$(crashing_icon_agent aarch64-apple-darwin || echo no)"
 mkdir -p "$work/bin"
-printf '#!/bin/sh\necho "launchctl $*" >> "%s/calls"\n' "$work" > "$work/bin/launchctl"
-chmod +x "$work/bin/launchctl"
-(PATH="$work/bin:$PATH" icon_agent_off)
-check "the icon agent is booted out and disabled" \
-    "launchctl bootout gui/$(id -u)/com.apple.iconservices.iconservicesagent
-launchctl disable gui/$(id -u)/com.apple.iconservices.iconservicesagent" \
+for tool in launchctl plutil; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\n' "$tool" "$work" > "$work/bin/$tool"
+    chmod +x "$work/bin/$tool"
+done
+(PATH="$work/bin:$PATH" TMPDIR="$work" icon_agent_fix)
+agent=com.apple.iconservices.iconservicesagent
+check "the icon agent restarts from a copy with Metal logging its archive error" \
+    "plutil -convert xml1 -o $work/taperec-$agent.plist /System/Library/LaunchAgents/$agent.plist
+plutil -remove EnvironmentVariables $work/taperec-$agent.plist
+plutil -insert EnvironmentVariables -json {\"MTL_ERROR_MODE\":\"nslog\"} $work/taperec-$agent.plist
+launchctl bootout gui/$(id -u)/$agent
+launchctl enable gui/$(id -u)/$agent
+launchctl bootstrap gui/$(id -u) $work/taperec-$agent.plist" \
     "$(cat "$work/calls")"
 
 check "failshots drop the tape extension" "/out/intro-failshot.png" "$(failshot_path /out tutorials/intro.yaml)"

@@ -39,7 +39,7 @@ jobs:
       - name: Settle the Dock
         run: |
           source action/main.sh
-          if crashing_icon_agent "$(target_triple "$RUNNER_ARCH")"; then icon_agent_off; fi
+          if crashing_icon_agent "$(target_triple "$RUNNER_ARCH")"; then icon_agent_fix; fi
           old=$(pgrep -x Dock)
           killall Dock
           wait_for_dock "$RUNNER_TEMP" "$old"
@@ -136,6 +136,13 @@ jobs:
           plain=$(luma "$before")
           echo "centre luma: $announced at ${at}s in the speed-up, $plain just before"
           awk -v a="$announced" -v b="$plain" 'BEGIN { exit !(a < b * 0.6) }' || { echo "::error::the speed-up is not announced"; exit 1; }
+      # On Intel, the restarted icon agent drew the recording's icons without crashing (actions/runner-images#14751).
+      - name: Check the icon agent
+        if: runner.arch == 'X64'
+        run: |
+          status=$(launchctl print "gui/$(id -u)/com.apple.iconservices.iconservicesagent")
+          grep -E 'state|successive crashes|MTL_ERROR_MODE' <<<"$status"
+          ! grep -q 'successive crashes' <<<"$status" || { echo "::error::the icon agent crashes"; exit 1; }
       # `auto` picks ScreenCaptureKit with a hardware encoder, ffmpeg without one.
       - name: Show the recorder auto chose
         run: |
