@@ -3,10 +3,10 @@
 # Usage: setup.sh <part>, e.g. setup.sh 3-cage
 set -euo pipefail
 
-# App launches stall while the Intel image's icon agent crash-loops; switch it off first, as the action does.
+# App launches stall while the Intel image's icon agent crash-loops; fix it first, as the action does.
 source "$(dirname "$0")/../../action/main.sh"
 set -euo pipefail
-if [ "$(uname -m)" = x86_64 ]; then icon_agent_off; fi
+if [ "$(uname -m)" = x86_64 ]; then icon_agent_fix; fi
 
 # Quiet VS Code from its first start: no welcome page, trust prompt or chat panel.
 user="$HOME/Library/Application Support/Code/User"
