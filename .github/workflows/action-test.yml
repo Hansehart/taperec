@@ -87,12 +87,12 @@ jobs:
       # An edit naming a mark the recording lacks fails with the item's path.
       - name: Reject an edit with an unknown mark
         run: |
-          printf 'tracks:\n  text:\n    - { text: x, from: nowhere, duration: 1s }\n' > taperec/bad.edit.yaml
+          printf 'tracks:\n  chapter:\n    - { text: x, from: nowhere, duration: 1s }\n' > taperec/bad.edit.yaml
           if error=$("$RUNNER_TEMP/taperec-bin/taperec" render taperec/smoke.timeline.yaml --edit taperec/bad.edit.yaml --out taperec/bad.mp4 2>&1); then
             echo "::error::rendering a bad edit succeeded"; exit 1
           fi
           echo "$error"
-          grep -qF 'tracks.text[0].from' <<<"$error" || { echo "::error::the error names no item"; exit 1; }
+          grep -qF 'tracks.chapter[0].from' <<<"$error" || { echo "::error::the error names no item"; exit 1; }
       # The edit's zoom changes frames while it lasts and is gone once it ends.
       - name: Check the zoom
         run: |
