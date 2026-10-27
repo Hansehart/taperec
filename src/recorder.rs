@@ -145,9 +145,17 @@ fn run(program: &str, args: &[OsString]) -> Result<Output, Error> {
     if output.status.success() {
         Ok(output)
     } else {
+        // The first lines say why, e.g. which filter ffmpeg rejected; later ones follow from them.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take(6)
+            .collect();
         Err(Error::Exit {
             program: program.to_owned(),
             code: output.status.code(),
+            detail: lines.join(" | "),
         })
     }
 }
@@ -182,6 +190,8 @@ pub enum Error {
         program: String,
         /// Its exit code, or `None` if a signal ended it.
         code: Option<i32>,
+        /// The end of what it wrote to stderr, where it was kept.
+        detail: String,
     },
     /// Prober output in an unexpected shape.
     Probe(String),
@@ -207,10 +217,17 @@ impl fmt::Display for Error {
             Self::Exit {
                 program,
                 code: Some(code),
-            } => write!(f, "{program} exited with {code}"),
+                detail,
+            } if detail.is_empty() => write!(f, "{program} exited with {code}"),
+            Self::Exit {
+                program,
+                code: Some(code),
+                detail,
+            } => write!(f, "{program} exited with {code}: {detail}"),
             Self::Exit {
                 program,
                 code: None,
+                ..
             } => write!(f, "{program} was killed"),
             Self::Probe(output) => {
                 write!(
@@ -316,6 +333,7 @@ impl Recording {
                     return Err(Error::Exit {
                         program: self.program.clone(),
                         code: status.and_then(Result::ok).and_then(|s| s.code()),
+                        detail: String::new(),
                     });
                 }
             }
@@ -361,6 +379,7 @@ impl Recording {
             Err(Error::Exit {
                 program: self.program.clone(),
                 code: status.code(),
+                detail: String::new(),
             })
         }
     }
@@ -381,6 +400,7 @@ impl Recording {
             Some(status) => Err(Error::Exit {
                 program: self.program.clone(),
                 code: status.code(),
+                detail: String::new(),
             }),
         }
     }
@@ -438,6 +458,7 @@ mod tests {
         Error::Exit {
             program: "sh".into(),
             code: Some(code),
+            detail: String::new(),
         }
     }
 
@@ -611,6 +632,13 @@ mod tests {
     }
 
     #[test]
+    fn a_failing_program_says_why() {
+        let out = temp("encode-why");
+        let err = encode("sh", &sh("echo 'Invalid chroma radius' >&2; exit 3"), &out).unwrap_err();
+        assert_eq!(err.to_string(), "sh exited with 3: Invalid chroma radius");
+    }
+
+    #[test]
     fn a_recorder_that_exits_before_recording_reports_its_code() {
         let mut recording = Recording::start("sh", &sh("echo starting; exit 3")).unwrap();
         assert_eq!(
@@ -618,6 +646,7 @@ mod tests {
             Err(Error::Exit {
                 program: "sh".into(),
                 code: Some(3),
+                detail: String::new(),
             })
         );
     }
@@ -656,6 +685,7 @@ mod tests {
             Err(Error::Exit {
                 program: "sh".into(),
                 code: Some(3),
+                detail: String::new(),
             })
         );
     }

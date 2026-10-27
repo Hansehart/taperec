@@ -1,17 +1,22 @@
-//! Edit files: texts, speed-ups and zooms placed on tracks against a recording's marks, applied when rendering.
+//! Edit files: chapters, comments, speed-ups, zooms and holds placed on tracks against a recording's marks,
+//! applied when rendering.
 //!
 //! ```yaml
 //! tracks:
-//!   text:
+//!   chapter:
 //!     - { text: Part 3 · The cage, from: start, until: end }
+//!   comment:
+//!     - { text: Only allowlisted hosts answer, from: curl-github, until: end }
 //!   speed:
 //!     - { label: Building the cage, length: 5s, from: reopen + 3s, until: cage-built }
 //!   zoom:
 //!     - { at: curl-results, scale: 1.75, from: curl-github - 0.5s, duration: 6s }
+//!   hold:
+//!     - { at: curl-results + 1s, duration: 3s }
 //! ```
 //!
 //! Items in a track may overlap: a later item lies on top of an earlier one, as stacked layers do. Speed-ups
-//! are the exception, as a fast-forward cannot nest. The tape's own `text`, `warp` and `zoom` steps form the
+//! are the exception, as a fast-forward cannot nest. The tape's own `chapter`, `warp` and `zoom` steps form the
 //! bottom layer.
 
 use std::borrow::Cow;
@@ -24,123 +29,63 @@ use crate::tape::{
     self, de_duration, de_opt_duration, without_defaults, DocPoint, DurationSchema, MarkName, Name,
     ParseError, Step, Tape, Text, Where, ZoomScale,
 };
-use crate::warp::{MarkEntry, TextEntry, TimelineFile, WarpEntry, WindowEntry, ZoomEntry, SCREEN};
+use crate::warp::{
+    HoldEntry, MarkEntry, TextEntry, TimelineFile, WarpEntry, WindowEntry, ZoomEntry, SCREEN,
+};
 
 /// An edit file: items on tracks, each placed against the recording's marks.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "taperec edit")]
 pub struct Edit {
-    /// Where each kind of overlay settles after its announcement in the centre; `{ text: top-left, effects:
-    /// top-right, keys: bottom }` unless given.
+    /// Where the bar sits and how long a chapter's card holds; `{ at: top, offset: 0, card: 2s }` unless given.
     #[serde(default)]
-    layout: Layout,
+    bar: BarSettings,
     /// The tracks; within one, a later item lies on top of an earlier one.
     #[serde(default)]
     tracks: Tracks,
 }
 
-/// Where each kind of overlay settles; the centre is where texts and effects announce themselves first.
+/// Where the bar sits, and how long each new chapter's card holds the video.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(transform = without_defaults)]
 #[serde(default, deny_unknown_fields)]
-pub struct Layout {
-    /// The texts: where we are.
-    pub text: Position,
-    /// The running speed-ups and zooms: what is happening.
-    pub effects: Position,
-    /// The shortcuts, shown on press and never announced.
-    pub keys: Position,
+pub struct BarSettings {
+    /// The screen's edge the bar sits along.
+    pub at: Edge,
+    /// Its distance from that edge, in pixels, e.g. to clear the Dock at the bottom.
+    pub offset: u32,
+    /// How long a new chapter's card holds the video before it moves into the bar; `0s` shows no cards.
+    #[serde(deserialize_with = "de_duration")]
+    #[schemars(with = "DurationSchema")]
+    pub card: Duration,
 }
 
-impl Default for Layout {
+impl Default for BarSettings {
     fn default() -> Self {
         Self {
-            text: Position::TopLeft,
-            effects: Position::TopRight,
-            keys: Position::Bottom,
+            at: Edge::Top,
+            offset: 0,
+            card: Duration::from_secs(2),
         }
     }
 }
 
-/// A place on the screen, or `off` to show nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Position {
-    /// The top-left corner, below the menu bar.
-    TopLeft,
-    /// The top-right corner, below the menu bar.
-    TopRight,
-    /// The bottom-left corner, above the Dock.
-    BottomLeft,
-    /// The bottom-right corner, above the Dock.
-    BottomRight,
-    /// Centred at the bottom, above the Dock.
+/// An edge of the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Edge {
+    /// The top, over the macOS menu bar.
+    Top,
+    /// The bottom.
     Bottom,
-    /// Nowhere.
-    Off,
-}
-
-impl Position {
-    const NAMES: [(&'static str, Self); 6] = [
-        ("top-left", Self::TopLeft),
-        ("top-right", Self::TopRight),
-        ("bottom-left", Self::BottomLeft),
-        ("bottom-right", Self::BottomRight),
-        ("bottom", Self::Bottom),
-        ("off", Self::Off),
-    ];
-}
-
-impl<'de> Deserialize<'de> for Position {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = Position;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(
-                    "`top-left`, `top-right`, `bottom-left`, `bottom-right`, `bottom` or `off`",
-                )
-            }
-
-            // YAML 1.1 reads an unquoted `off` as `false`.
-            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
-                if value {
-                    Err(E::invalid_value(serde::de::Unexpected::Bool(value), &self))
-                } else {
-                    Ok(Position::Off)
-                }
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                Position::NAMES
-                    .iter()
-                    .find(|(name, _)| *name == value)
-                    .map(|(_, position)| *position)
-                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
-            }
-        }
-
-        deserializer.deserialize_any(Visitor)
-    }
-}
-
-impl JsonSchema for Position {
-    fn schema_name() -> Cow<'static, str> {
-        "Position".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        let names: Vec<&str> = Self::NAMES.iter().map(|(name, _)| *name).collect();
-        json_schema!({ "type": "string", "enum": names })
-    }
 }
 
 impl Edit {
-    /// Where each kind of overlay settles.
+    /// Where the bar sits and how long cards hold.
     #[must_use]
-    pub fn layout(&self) -> Layout {
-        self.layout
+    pub fn bar(&self) -> BarSettings {
+        self.bar
     }
 }
 
@@ -148,18 +93,36 @@ impl Edit {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Tracks {
-    /// Texts, announced in the centre and then kept in their corner; `""` hides what lies beneath.
+    /// Where we are: each new chapter shows on a card, then in the bar; `""` hides what lies beneath.
     #[serde(default)]
-    text: Vec<TextItem>,
-    /// Stretches fast-forwarded, announced and then kept in their corner; they must not overlap.
+    chapter: Vec<TextItem>,
+    /// What to notice now, in the bar's middle; `""` hides what lies beneath.
+    #[serde(default)]
+    comment: Vec<TextItem>,
+    /// Stretches fast-forwarded, named in the bar while they play; they must not overlap.
     #[serde(default)]
     speed: Vec<SpeedItem>,
     /// Zooms onto a point, a mark's position or the window under a mark.
     #[serde(default)]
     zoom: Vec<ZoomItem>,
+    /// Frames held still for reading time; never within a speed-up.
+    #[serde(default)]
+    hold: Vec<HoldItem>,
 }
 
-/// A text shown from `from` until `until`, or for `duration`.
+/// The video held still at a moment for a while.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct HoldItem {
+    /// The moment held.
+    at: TimeRef,
+    /// How long it holds.
+    #[serde(deserialize_with = "de_duration")]
+    #[schemars(with = "DurationSchema")]
+    duration: Duration,
+}
+
+/// A chapter or comment shown from `from` until `until`, or for `duration`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(transform = without_defaults)]
 #[serde(deny_unknown_fields)]
@@ -358,6 +321,9 @@ impl Edit {
                 refs.push((format!("{}.until", placement.path), &until.mark, false));
             }
         }
+        for (index, hold) in self.tracks.hold.iter().enumerate() {
+            refs.push((format!("tracks.hold[{index}].at"), &hold.at.mark, false));
+        }
         for (index, zoom) in self.tracks.zoom.iter().enumerate() {
             if let Some(MarkRef(mark)) = &zoom.at {
                 refs.push((format!("tracks.zoom[{index}].at"), mark, true));
@@ -372,12 +338,26 @@ impl Edit {
     /// Where every item lies, track by track.
     fn placements(&self) -> Vec<Placement<'_>> {
         let tracks = &self.tracks;
-        let text = tracks.text.iter().enumerate().map(|(i, item)| Placement {
-            path: format!("tracks.text[{i}]"),
-            from: &item.from,
-            until: item.until.as_ref(),
-            duration: item.duration,
-        });
+        let chapter = tracks
+            .chapter
+            .iter()
+            .enumerate()
+            .map(|(i, item)| Placement {
+                path: format!("tracks.chapter[{i}]"),
+                from: &item.from,
+                until: item.until.as_ref(),
+                duration: item.duration,
+            });
+        let comment = tracks
+            .comment
+            .iter()
+            .enumerate()
+            .map(|(i, item)| Placement {
+                path: format!("tracks.comment[{i}]"),
+                from: &item.from,
+                until: item.until.as_ref(),
+                duration: item.duration,
+            });
         let speed = tracks.speed.iter().enumerate().map(|(i, item)| Placement {
             path: format!("tracks.speed[{i}]"),
             from: &item.from,
@@ -390,7 +370,7 @@ impl Edit {
             until: item.until.as_ref(),
             duration: item.duration,
         });
-        text.chain(speed).chain(zoom).collect()
+        chapter.chain(comment).chain(speed).chain(zoom).collect()
     }
 }
 
@@ -421,6 +401,14 @@ pub fn check(edit: &Edit, tape: &Tape) -> Result<(), ParseError> {
 /// The rules an edit keeps whatever the recording: each item ends one way, speed-ups take time, zooms have
 /// one centre and a scale in range.
 fn validate(edit: &Edit) -> Result<(), ParseError> {
+    for (index, hold) in edit.tracks.hold.iter().enumerate() {
+        if hold.duration.is_zero() {
+            return Err(error(
+                format!("tracks.hold[{index}].duration"),
+                "a hold must last longer than zero",
+            ));
+        }
+    }
     for placement in edit.placements() {
         if placement.until.is_some() == placement.duration.is_some() {
             return Err(error(
@@ -540,24 +528,13 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
     validate(edit)?;
     let marks = &file.marks;
     let placements = edit.placements();
-    let (text_items, rest) = placements.split_at(edit.tracks.text.len());
+    let (chapter_items, rest) = placements.split_at(edit.tracks.chapter.len());
+    let (comment_items, rest) = rest.split_at(edit.tracks.comment.len());
     let (speeds, zooms) = rest.split_at(edit.tracks.speed.len());
 
-    // The tape's texts below, the edit's above; an empty text hides what lies beneath.
-    let mut layers: Vec<(Duration, Duration, String)> = file
-        .texts
-        .iter()
-        .map(|text| (text.start, text.end, text.text.clone()))
-        .collect();
-    for (item, placement) in edit.tracks.text.iter().zip(text_items) {
-        let (from, until) = place(placement, marks)?;
-        layers.push((from, until, item.text.0.clone()));
-    }
-    let texts = layer(&layers)
-        .into_iter()
-        .filter(|(_, _, text)| !text.is_empty())
-        .map(|(start, end, text)| TextEntry { text, start, end })
-        .collect();
+    // The tape's chapters below, the edit's above; an empty one hides what lies beneath.
+    let chapters = layered_texts(&file.chapters, &edit.tracks.chapter, chapter_items, marks)?;
+    let comments = layered_texts(&file.comments, &edit.tracks.comment, comment_items, marks)?;
 
     // Speed-ups side by side, never stacked.
     let mut warps: Vec<(WarpEntry, Option<&str>)> =
@@ -585,7 +562,22 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
             "speed-ups must not overlap; end one before the next starts",
         ));
     }
-    let warps = warps.into_iter().map(|(warp, _)| warp).collect();
+    let warps: Vec<WarpEntry> = warps.into_iter().map(|(warp, _)| warp).collect();
+
+    // Holds stop the video between speed-ups, never within one.
+    let mut holds = file.holds.clone();
+    for (index, item) in edit.tracks.hold.iter().enumerate() {
+        let path = format!("tracks.hold[{index}].at");
+        let at = moment(&item.at, marks, path.clone())?;
+        if warps.iter().any(|warp| warp.start < at && at < warp.end) {
+            return Err(error(path, "a hold must not fall within a speed-up"));
+        }
+        holds.push(HoldEntry {
+            at,
+            length: item.duration,
+        });
+    }
+    holds.sort_by_key(|hold| hold.at);
 
     // Zoom: the tape's changes of view become stretches, under the edit's.
     let end = find(marks, MarkName::END).map_or(Duration::MAX, |mark| mark.at);
@@ -637,10 +629,34 @@ pub fn apply(edit: &Edit, file: TimelineFile) -> Result<TimelineFile, ParseError
 
     Ok(TimelineFile {
         warps,
-        texts,
+        chapters,
+        comments,
+        holds,
         zooms,
         ..file
     })
+}
+
+/// The `items` of a chapter or comment track laid over `beneath`; an empty text hides what lies beneath.
+fn layered_texts(
+    beneath: &[TextEntry],
+    items: &[TextItem],
+    placements: &[Placement<'_>],
+    marks: &[MarkEntry],
+) -> Result<Vec<TextEntry>, ParseError> {
+    let mut layers: Vec<(Duration, Duration, String)> = beneath
+        .iter()
+        .map(|text| (text.start, text.end, text.text.clone()))
+        .collect();
+    for (item, placement) in items.iter().zip(placements) {
+        let (from, until) = place(placement, marks)?;
+        layers.push((from, until, item.text.0.clone()));
+    }
+    Ok(layer(&layers)
+        .into_iter()
+        .filter(|(_, _, text)| !text.is_empty())
+        .map(|(start, end, text)| TextEntry { text, start, end })
+        .collect())
 }
 
 /// Space kept around a window a zoom frames, in pixels.
@@ -729,7 +745,9 @@ mod tests {
         TimelineFile {
             video: "t.raw.mkv".into(),
             warps: Vec::new(),
-            texts: Vec::new(),
+            chapters: Vec::new(),
+            comments: Vec::new(),
+            holds: Vec::new(),
             zooms: Vec::new(),
             marks: vec![
                 mark("start", 0, None),
@@ -756,12 +774,12 @@ mod tests {
     #[test]
     fn moments_take_an_offset_either_way() {
         let file = applied(
-            "tracks:\n  text:\n    - { text: a, from: built + 2s, until: results - 500ms }\n",
+            "tracks:\n  chapter:\n    - { text: a, from: built + 2s, until: results - 500ms }\n",
             timeline(),
         )
         .unwrap();
-        assert_eq!(file.texts[0].start, secs(42));
-        assert_eq!(file.texts[0].end, Duration::from_millis(59_500));
+        assert_eq!(file.chapters[0].start, secs(42));
+        assert_eq!(file.chapters[0].end, Duration::from_millis(59_500));
         for bad in [
             "built +2s",
             "built + 2",
@@ -770,7 +788,7 @@ mod tests {
             "built + 2s extra",
         ] {
             let yaml =
-                format!("tracks:\n  text:\n    - {{ text: a, from: {bad}, duration: 1s }}\n");
+                format!("tracks:\n  chapter:\n    - {{ text: a, from: {bad}, duration: 1s }}\n");
             assert!(parse(&yaml).is_err(), "{bad}");
         }
     }
@@ -778,14 +796,14 @@ mod tests {
     #[test]
     fn a_later_text_lies_on_top_and_an_empty_one_hides_those_beneath() {
         let mut file = timeline();
-        file.texts = vec![shown("tape", 0, 100)];
+        file.chapters = vec![shown("tape", 0, 100)];
         let file = applied(
-            "tracks:\n  text:\n    - { text: edit, from: built, until: results }\n    - { text: '', from: start + 90s, until: end }\n",
+            "tracks:\n  chapter:\n    - { text: edit, from: built, until: results }\n    - { text: '', from: start + 90s, until: end }\n",
             file,
         )
         .unwrap();
         assert_eq!(
-            file.texts,
+            file.chapters,
             [
                 shown("tape", 0, 40),
                 shown("edit", 40, 60),
@@ -922,16 +940,16 @@ mod tests {
     fn errors_name_the_item() {
         let at = |yaml: &str| applied(yaml, timeline()).unwrap_err().at;
         assert_eq!(
-            at("tracks:\n  text:\n    - { text: a, from: start, until: missing }\n"),
-            Where::Step("tracks.text[0].until".into())
+            at("tracks:\n  chapter:\n    - { text: a, from: start, until: missing }\n"),
+            Where::Step("tracks.chapter[0].until".into())
         );
         assert_eq!(
-            at("tracks:\n  text:\n    - { text: a, from: results, until: built }\n"),
-            Where::Step("tracks.text[0]".into())
+            at("tracks:\n  chapter:\n    - { text: a, from: results, until: built }\n"),
+            Where::Step("tracks.chapter[0]".into())
         );
         assert_eq!(
-            at("tracks:\n  text:\n    - { text: a, from: start, until: end, duration: 1s }\n"),
-            Where::Step("tracks.text[0]".into())
+            at("tracks:\n  chapter:\n    - { text: a, from: start, until: end, duration: 1s }\n"),
+            Where::Step("tracks.chapter[0]".into())
         );
         assert_eq!(
             at("tracks:\n  zoom:\n    - { at: built, from: start, until: end }\n"),
@@ -948,25 +966,21 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_places_each_kind_or_switches_it_off() {
-        assert_eq!(parse("tracks: {}\n").unwrap().layout(), Layout::default());
-        let edit = parse("layout: { text: bottom-left, keys: off }\n").unwrap();
+    fn the_bar_sits_at_an_edge_with_a_card_length() {
+        assert_eq!(parse("tracks: {}\n").unwrap().bar(), BarSettings::default());
+        let edit = parse("bar: { at: bottom, offset: 120, card: 0s }\n").unwrap();
         assert_eq!(
-            edit.layout(),
-            Layout {
-                text: Position::BottomLeft,
-                effects: Position::TopRight,
-                keys: Position::Off,
+            edit.bar(),
+            BarSettings {
+                at: Edge::Bottom,
+                offset: 120,
+                card: Duration::ZERO,
             }
         );
-        assert_eq!(
-            parse("layout: { keys: \"off\" }\n").unwrap().layout().keys,
-            Position::Off
-        );
         for bad in [
-            "layout: { text: middle }\n",
-            "layout: { keys: on }\n",
-            "layout: { sound: off }\n",
+            "bar: { at: left }\n",
+            "bar: { offset: -1 }\n",
+            "bar: { layout: top }\n",
         ] {
             let err = parse(bad).unwrap_err();
             assert!(
@@ -974,6 +988,43 @@ mod tests {
                 "{bad}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn comments_layer_on_their_own_track() {
+        let mut file = timeline();
+        file.chapters = vec![shown("tape", 0, 100)];
+        let file = applied(
+            "tracks:\n  comment:\n    - { text: note, from: built, until: results }\n",
+            file,
+        )
+        .unwrap();
+        assert_eq!(file.chapters, [shown("tape", 0, 100)]);
+        assert_eq!(file.comments, [shown("note", 40, 60)]);
+    }
+
+    #[test]
+    fn holds_fall_on_marks_outside_speed_ups() {
+        let file = applied(
+            "tracks:\n  hold:\n    - { at: results + 1s, duration: 3s }\n    - { at: built, duration: 2s }\n",
+            timeline(),
+        )
+        .unwrap();
+        let holds: Vec<(Duration, Duration)> =
+            file.holds.iter().map(|h| (h.at, h.length)).collect();
+        assert_eq!(holds, [(secs(40), secs(2)), (secs(61), secs(3))]);
+        let err = applied(
+            "tracks:\n  speed:\n    - { label: a, length: 1s, from: built, until: results }\n  hold:\n    - { at: built + 5s, duration: 1s }\n",
+            timeline(),
+        )
+        .unwrap_err();
+        assert_eq!(err.at, Where::Step("tracks.hold[0].at".into()));
+        let zero = applied(
+            "tracks:\n  hold:\n    - { at: built, duration: 0s }\n",
+            timeline(),
+        )
+        .unwrap_err();
+        assert_eq!(zero.at, Where::Step("tracks.hold[0].duration".into()));
     }
 
     #[test]

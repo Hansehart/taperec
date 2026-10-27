@@ -335,16 +335,16 @@
           ]
         },
         {
-          "description": "Show this text from here on, announced in the centre and then kept in its corner, e.g.\n`Part 1 · Docker`; `\"\"` hides it.",
+          "description": "Start a chapter from here on, e.g. `Part 1 · Docker`: shown on a card, then in the bar; `\"\"` ends it.",
           "type": "object",
           "properties": {
-            "text": {
+            "chapter": {
               "$ref": "#/$defs/Text"
             }
           },
           "additionalProperties": false,
           "required": [
-            "text"
+            "chapter"
           ]
         },
         {

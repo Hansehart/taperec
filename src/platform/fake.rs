@@ -185,6 +185,7 @@ impl Recorder for FakeRecorder {
             Some(limit) if self.checks > limit => Err(CaptureError::Exit {
                 program: "fake recorder".into(),
                 code: Some(1),
+                detail: String::new(),
             }),
             _ => Ok(()),
         }

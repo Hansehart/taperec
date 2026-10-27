@@ -1,8 +1,9 @@
 # yaml-language-server: $schema=../../schema/taperec-edit.schema.json
-# Part 3's texts, speed-up and zoom, against the marks in 3-cage.yaml.
+# Part 3's chapter, comments, speed-ups and zoom, against the marks in 3-cage.yaml.
 tracks:
-  text:
+  chapter:
     - { text: "3/3 · Reopen o3s in its cage", from: start, until: end }
+  comment:
     - { text: Only allowlisted hosts answer from inside the cage, from: curl, until: answered }
     - { text: github.com is allowed · example.com is blocked, from: answered, until: end }
   speed:

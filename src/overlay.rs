@@ -1,5 +1,5 @@
-//! The overlays laid over the video, drawn in Rust with bundled fonts, the same on every machine: cards that
-//! announce themselves in the centre and glide to their corner, and pills of keycaps.
+//! The overlays laid over the video, drawn in Rust with bundled fonts, the same on every machine: one bar with
+//! a zone each for the chapter, the comment, and the effects and shortcuts, and the card a new chapter opens with.
 //!
 //! Text is set in Inter and shaped with `HarfRust`, so it kerns as the font asks; icons come from the Lucide
 //! icon font. Both fonts ship inside the binary.
@@ -15,8 +15,8 @@ use harfrust::{Buffer, Direction, ShapeOptions, ShaperFont};
 use skrifa::font::glyph::outline::ControlBoundsSink;
 use skrifa::{DrawMemory, Font, GlyphId, PathSink, ScalerFont};
 
-use crate::edit::Position;
-use crate::scene::{Look, Shown};
+use crate::edit::{BarSettings, Edge};
+use crate::scene::BarState;
 
 /// Inter Bold, under the SIL Open Font License 1.1 (`assets/fonts/LICENSE-inter`).
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
@@ -26,22 +26,28 @@ const LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide.ttf");
 
 /// The video's size in pixels.
 const SCREEN: (u32, u32) = (1920, 1080);
-/// A card's text size while announced in the centre, in pixels per em.
-const ANNOUNCED: f32 = 44.0;
-/// A card's or pill's text size once settled, in pixels per em.
-const SETTLED: f32 = 26.0;
-/// Space between the screen's sides and what settles there, in pixels.
-const SIDE: f32 = 32.0;
-/// Space between the screen's top and what settles there, clear of the macOS menu bar, in pixels.
-const TOP: f32 = 44.0;
-/// Space between the screen's bottom and what settles there, clear of the Dock, in pixels.
-const BOTTOM: f32 = 120.0;
-/// Space between two overlays side by side or stacked, in pixels.
-const GAP: f32 = 12.0;
-/// How opaque a card's black is.
-const CARD_FILL: f32 = 0.85;
-/// How opaque a pill's black is.
-const PILL_FILL: f32 = 0.6;
+/// The bar's height, in pixels.
+pub const BAR_HEIGHT: u32 = 64;
+/// The chapter zone's width, at the bar's left.
+const CHAPTER_WIDTH: f32 = 440.0;
+/// The effects and shortcuts zone's width, at the bar's right.
+const STATUS_WIDTH: f32 = 620.0;
+/// Space between a zone's content and its sides, in pixels.
+const ZONE_PADDING: f32 = 20.0;
+/// The chapter's text size, in pixels per em.
+const CHAPTER_SIZE: f32 = 24.0;
+/// The comment's text size, the bar's largest, in pixels per em.
+const COMMENT_SIZE: f32 = 28.0;
+/// The effects' and keycaps' text size, in pixels per em.
+const STATUS_SIZE: f32 = 22.0;
+/// How dark the bar's tint over the frosted screen is.
+const BAR_TINT: f32 = 0.45;
+/// How bright the lines between zones are.
+const DIVIDER: f32 = 0.2;
+/// A card's title size, in pixels per em.
+const CARD_SIZE: f32 = 56.0;
+/// How far a card dims the screen.
+const CARD_DIM: f32 = 0.55;
 /// The size keycaps are designed at; they scale with the text around them.
 const KEY_DESIGN: f32 = 28.0;
 /// A keycap label's size at [`KEY_DESIGN`], in pixels per em.
@@ -140,186 +146,127 @@ fn fonts() -> Result<&'static Fonts, Error> {
         .ok_or(Error::Font("Inter or Lucide"))
 }
 
-/// The overlays of one moment over a transparent screen: each card or pill where its glide has taken it.
+/// Where the bar's band starts from the top, by `settings`.
+#[must_use]
+pub fn bar_top(settings: &BarSettings) -> u32 {
+    match settings.at {
+        Edge::Top => settings.offset,
+        Edge::Bottom => SCREEN.1.saturating_sub(BAR_HEIGHT + settings.offset),
+    }
+}
+
+/// The bar over a transparent screen, placed by `settings`: the tint and the lines between zones over the band
+/// the graph frosts, then the chapter at the left, the comment in the middle and the effects and shortcuts at
+/// the right; text too wide for its zone ends in "…".
 ///
 /// # Errors
 ///
 /// A bundled font that cannot be read, or text that cannot be shaped.
-pub fn frame(shown: &[Shown]) -> Result<Image, Error> {
-    let homes = settled_boxes(shown)?;
-    let centres = announced_boxes(shown)?;
+pub fn bar(state: &BarState, settings: &BarSettings) -> Result<Image, Error> {
     let mut image = gap();
-    for ((item, home), centre) in shown.iter().zip(&homes).zip(&centres) {
-        let eased = smoothstep(item.progress);
-        let size = match centre {
-            Some(_) => lerp(ANNOUNCED, SETTLED, eased),
-            None => SETTLED,
-        };
-        let (mid_x, mid_y) = match centre {
-            Some(centre) => (
-                lerp(centre.mid().0, home.mid().0, eased),
-                lerp(centre.mid().1, home.mid().1, eased),
-            ),
-            None => home.mid(),
-        };
-        let card = Card::shape(&item.content, size)?;
-        let (left, top) = (mid_x - card.width / 2.0, mid_y - card.height / 2.0);
-        let mut backdrop = rectangle(card.width, card.height, card.radius);
-        backdrop.translate(left, top);
-        let fill = match item.look {
-            Look::Card => CARD_FILL,
-            Look::Pill => PILL_FILL,
-        };
-        image.fill(&backdrop, [0, 0, 0], fill);
-        let baseline = mid_y + card.cap / 2.0;
-        image.fill(
-            &card.line.keycaps(left + card.padding, mid_y),
-            [255, 255, 255],
-            KEY_FILL,
-        );
-        image.fill(
-            &card.line.glyphs(left + card.padding, baseline)?,
-            [255, 255, 255],
-            1.0,
-        );
+    let width = f32_of(SCREEN.0);
+    let (top, height) = (f32_of(bar_top(settings)), f32_of(BAR_HEIGHT));
+    let middle = top + height / 2.0;
+    let mut band = rectangle(width, height, 0.0);
+    band.translate(0.0, top);
+    image.fill(&band, [0, 0, 0], BAR_TINT);
+    for x in [CHAPTER_WIDTH, width - STATUS_WIDTH] {
+        let mut line = rectangle(1.0, height * 0.6, 0.0);
+        line.translate(x, top + height * 0.2);
+        image.fill(&line, [255, 255, 255], DIVIDER);
+    }
+    if let Some(chapter) = &state.chapter {
+        let line = fitted(
+            &[Run::Text(chapter.clone())],
+            CHAPTER_SIZE,
+            CHAPTER_WIDTH - 2.0 * ZONE_PADDING,
+        )?;
+        draw_line(&mut image, &line, ZONE_PADDING, middle, CHAPTER_SIZE)?;
+    }
+    if let Some(comment) = &state.comment {
+        let room = width - CHAPTER_WIDTH - STATUS_WIDTH - 2.0 * ZONE_PADDING;
+        let line = fitted(&[Run::Text(comment.clone())], COMMENT_SIZE, room)?;
+        let left = CHAPTER_WIDTH + ZONE_PADDING + (room - line.advance) / 2.0;
+        draw_line(&mut image, &line, left, middle, COMMENT_SIZE)?;
+    }
+    let mut status: Vec<Run> = Vec::new();
+    for effect in &state.effects {
+        if !status.is_empty() {
+            status.push(Run::Text("   ".to_owned()));
+        }
+        status.extend(effect.iter().cloned());
+    }
+    for (index, keys) in state.keys.iter().enumerate() {
+        status.push(Run::Text(
+            if index == 0 && !state.effects.is_empty() {
+                "   "
+            } else {
+                "  "
+            }
+            .to_owned(),
+        ));
+        status.push(Run::Keys(keys.clone()));
+    }
+    if !status.is_empty() {
+        let room = STATUS_WIDTH - 2.0 * ZONE_PADDING;
+        let line = fitted(&status, STATUS_SIZE, room)?;
+        draw_line(
+            &mut image,
+            &line,
+            width - ZONE_PADDING - line.advance,
+            middle,
+            STATUS_SIZE,
+        )?;
     }
     Ok(image)
 }
 
-/// A box on screen.
-#[derive(Debug, Clone, Copy)]
-struct Rect {
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-}
-
-impl Rect {
-    fn mid(self) -> (f32, f32) {
-        (self.left + self.width / 2.0, self.top + self.height / 2.0)
-    }
-}
-
-/// A card or pill shaped at one size: its line of runs and the box around it.
-struct Card {
-    line: Line,
-    width: f32,
-    height: f32,
-    padding: f32,
-    radius: f32,
-    cap: f32,
-}
-
-impl Card {
-    /// `content` at `size`, cut short with "…" if wider than the screen allows.
-    fn shape(content: &[Run], size: f32) -> Result<Self, Error> {
-        let padding = size * 0.7;
-        let room = f32_of(SCREEN.0) - 2.0 * SIDE - 2.0 * padding;
-        let mut runs = content.to_vec();
-        let mut line = Line::shape(&runs, size)?;
-        while line.advance > room && shorten_longest_text(&mut runs) {
-            line = Line::shape(&runs, size)?;
-        }
-        Ok(Self {
-            width: line.advance + 2.0 * padding,
-            height: size * 1.8,
-            padding,
-            radius: size * 0.45,
-            cap: TextMetrics::at(size)?.cap,
-            line,
-        })
-    }
-}
-
-/// Where each overlay settles: side by side from its corner, oldest nearest; `bottom` centres its row.
-fn settled_boxes(shown: &[Shown]) -> Result<Vec<Rect>, Error> {
+/// A new chapter's card: the screen dimmed and `title` large in its middle.
+///
+/// # Errors
+///
+/// A bundled font that cannot be read, or text that cannot be shaped.
+pub fn card(title: &str) -> Result<Image, Error> {
+    let mut image = gap();
     let (width, height) = (f32_of(SCREEN.0), f32_of(SCREEN.1));
-    let mut boxes = Vec::with_capacity(shown.len());
-    for item in shown {
-        let card = Card::shape(&item.content, SETTLED)?;
-        boxes.push(Rect {
-            left: 0.0,
-            top: 0.0,
-            width: card.width,
-            height: card.height,
-        });
-    }
-    for home in [
-        Position::TopLeft,
-        Position::TopRight,
-        Position::BottomLeft,
-        Position::BottomRight,
-        Position::Bottom,
-    ] {
-        let row: Vec<usize> = (0..shown.len())
-            .filter(|&i| shown.get(i).is_some_and(|item| item.home == home))
-            .collect();
-        let total = row
-            .iter()
-            .filter_map(|&i| boxes.get(i))
-            .map(|b| b.width)
-            .sum::<f32>()
-            + GAP * f32_of(u32::try_from(row.len().saturating_sub(1)).unwrap_or(0));
-        let mut x = match home {
-            Position::TopLeft | Position::BottomLeft => SIDE,
-            Position::Bottom => (width - total) / 2.0,
-            _ => width - SIDE,
-        };
-        for &i in &row {
-            let Some(b) = boxes.get_mut(i) else { continue };
-            b.top = match home {
-                Position::TopLeft | Position::TopRight => TOP,
-                _ => height - BOTTOM - b.height,
-            };
-            if matches!(home, Position::TopRight | Position::BottomRight) {
-                x -= b.width;
-                b.left = x;
-                x -= GAP;
-            } else {
-                b.left = x;
-                x += b.width + GAP;
-            }
-        }
-    }
-    Ok(boxes)
+    image.fill(&rectangle(width, height, 0.0), [0, 0, 0], CARD_DIM);
+    let line = fitted(
+        &[Run::Text(title.to_owned())],
+        CARD_SIZE,
+        width - 4.0 * ZONE_PADDING,
+    )?;
+    draw_line(
+        &mut image,
+        &line,
+        (width - line.advance) / 2.0,
+        height / 2.0,
+        CARD_SIZE,
+    )?;
+    Ok(image)
 }
 
-/// Where each announcing or gliding overlay stands in the centre, stacked oldest on top; `None` for the rest.
-fn announced_boxes(shown: &[Shown]) -> Result<Vec<Option<Rect>>, Error> {
-    let mut boxes: Vec<Option<Rect>> = Vec::with_capacity(shown.len());
-    for item in shown {
-        boxes.push(if item.look == Look::Card && item.progress < 1.0 {
-            let card = Card::shape(&item.content, ANNOUNCED)?;
-            Some(Rect {
-                left: (f32_of(SCREEN.0) - card.width) / 2.0,
-                top: 0.0,
-                width: card.width,
-                height: card.height,
-            })
-        } else {
-            None
-        });
+/// `runs` shaped at `size`, cut short with "…" until they fit `room`.
+fn fitted(runs: &[Run], size: f32, room: f32) -> Result<Line, Error> {
+    let mut runs = runs.to_vec();
+    let mut line = Line::shape(&runs, size)?;
+    while line.advance > room && shorten_longest_text(&mut runs) {
+        line = Line::shape(&runs, size)?;
     }
-    let count = boxes.iter().flatten().count();
-    let total = boxes.iter().flatten().map(|b| b.height).sum::<f32>()
-        + GAP * f32_of(u32::try_from(count.saturating_sub(1)).unwrap_or(0));
-    let mut y = (f32_of(SCREEN.1) - total) / 2.0;
-    for b in boxes.iter_mut().flatten() {
-        b.top = y;
-        y += b.height + GAP;
-    }
-    Ok(boxes)
+    Ok(line)
 }
 
-/// Eases `t` from 0 to 1, slow at both ends.
-fn smoothstep(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn lerp(from: f32, to: f32, t: f32) -> f32 {
-    from + (to - from) * t
+/// Draws `line` from `left`, its capitals centred on `middle`: keycaps, then glyphs in white.
+fn draw_line(
+    image: &mut Image,
+    line: &Line,
+    left: f32,
+    middle: f32,
+    size: f32,
+) -> Result<(), Error> {
+    let baseline = middle + TextMetrics::at(size)?.cap / 2.0;
+    image.fill(&line.keycaps(left, middle), [255, 255, 255], KEY_FILL);
+    image.fill(&line.glyphs(left, baseline)?, [255, 255, 255], 1.0);
+    Ok(())
 }
 
 /// Cuts the longest text by one character, ending it in "…"; false when no text is left to cut.
@@ -758,13 +705,13 @@ fn as_index(value: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    fn card(text: &str, home: Position, progress: f32) -> Shown {
-        Shown {
-            content: vec![Run::Text(text.into())],
-            look: Look::Card,
-            home,
-            progress,
+    fn settings(at: Edge, offset: u32) -> BarSettings {
+        BarSettings {
+            at,
+            offset,
+            card: Duration::from_secs(2),
         }
     }
 
@@ -772,19 +719,25 @@ mod tests {
         image.rgba[as_index((y * image.width + x) * 4 + 3)]
     }
 
-    /// The box of pixels with any coverage, as (left, top, right, bottom).
-    fn covered(image: &Image) -> Option<(u32, u32, u32, u32)> {
-        let mut bounds: Option<(u32, u32, u32, u32)> = None;
-        for y in 0..image.height {
-            for x in 0..image.width {
-                if alpha(image, x, y) > 0 {
-                    bounds = Some(bounds.map_or((x, y, x, y), |(l, t, r, b)| {
-                        (l.min(x), t.min(y), r.max(x), b.max(y))
-                    }));
-                }
-            }
+    fn red(image: &Image, x: u32, y: u32) -> u8 {
+        image.rgba[as_index((y * image.width + x) * 4)]
+    }
+
+    /// The columns between `from` and `to` with a bright pixel in rows `rows`, as (first, last).
+    fn lit(image: &Image, from: u32, to: u32, rows: std::ops::Range<u32>) -> Option<(u32, u32)> {
+        let columns: Vec<u32> = (from..to)
+            .filter(|&x| rows.clone().any(|y| red(image, x, y) > 128))
+            .collect();
+        Some((*columns.first()?, *columns.last()?))
+    }
+
+    fn full() -> BarState {
+        BarState {
+            chapter: Some("3/3 · Reopen o3s".into()),
+            comment: Some("Only allowlisted hosts answer".into()),
+            effects: vec![vec![Run::Icon(Icon::ZoomIn), Run::Text("  1.75×".into())]],
+            keys: vec![vec!["⌘".into(), "V".into()]],
         }
-        bounds
     }
 
     #[test]
@@ -795,67 +748,53 @@ mod tests {
     }
 
     #[test]
-    fn a_settled_text_sits_top_left_below_the_menu_bar() {
-        let image = frame(&[card("Part 1 · Docker", Position::TopLeft, 1.0)]).unwrap();
-        let (l, t, r, b) = covered(&image).unwrap();
-        assert_eq!((l, t), (32, 44), "{l},{t}..{r},{b}");
-        assert!(r < 400 && b < 100, "{l},{t}..{r},{b}");
-        assert_eq!(alpha(&image, 40, 70), 217);
+    fn the_bar_tints_its_band_and_keeps_each_zone() {
+        let image = bar(&full(), &settings(Edge::Top, 0)).unwrap();
+        assert_eq!(alpha(&image, 300, 2), 115);
+        assert_eq!(alpha(&image, 300, 70), 0, "nothing below the band");
+        let chapter = lit(&image, 0, 440, 0..64).unwrap();
+        assert!(chapter.0 >= 20 && chapter.1 < 420, "{chapter:?}");
+        let comment = lit(&image, 441, 1299, 0..64).unwrap();
+        let mid = u32::midpoint(comment.0, comment.1);
+        assert!(mid.abs_diff(u32::midpoint(440, 1300)) <= 3, "{comment:?}");
+        let status = lit(&image, 1301, 1920, 0..64).unwrap();
+        assert!(status.0 > 1320 && status.1 <= 1900, "{status:?}");
     }
 
     #[test]
-    fn an_announcement_stands_in_the_centre_and_glides_home() {
-        let centred = covered(&frame(&[card("Part 1", Position::TopLeft, 0.0)]).unwrap()).unwrap();
-        let mid = (
-            u32::midpoint(centred.0, centred.2),
-            u32::midpoint(centred.1, centred.3),
-        );
-        assert!(
-            mid.0.abs_diff(960) <= 1 && mid.1.abs_diff(540) <= 1,
-            "{centred:?}"
-        );
-        let half = covered(&frame(&[card("Part 1", Position::TopLeft, 0.5)]).unwrap()).unwrap();
-        let settled = covered(&frame(&[card("Part 1", Position::TopLeft, 1.0)]).unwrap()).unwrap();
-        // Halfway, smaller than announced and larger than settled, between the two places.
-        assert!(half.0 > settled.0 && half.0 < centred.0, "{half:?}");
-        assert!(half.2 - half.0 < centred.2 - centred.0, "{half:?}");
-        assert!(half.2 - half.0 > settled.2 - settled.0, "{half:?}");
+    fn the_bar_sits_along_either_edge_with_an_offset() {
+        let image = bar(&full(), &settings(Edge::Bottom, 100)).unwrap();
+        let top = 1080 - 64 - 100;
+        assert_eq!(alpha(&image, 300, top + 2), 115);
+        assert_eq!(alpha(&image, 300, top - 2), 0);
+        assert_eq!(alpha(&image, 300, top + 66), 0);
+        assert_eq!(bar_top(&settings(Edge::Top, 30)), 30);
     }
 
     #[test]
-    fn effects_line_up_from_the_top_right_corner() {
-        let first = card("Building", Position::TopRight, 1.0);
-        let second = card("1.5×", Position::TopRight, 1.0);
-        let one = covered(&frame(std::slice::from_ref(&first)).unwrap()).unwrap();
-        let two = covered(&frame(&[first, second]).unwrap()).unwrap();
-        assert_eq!(one.2, 1920 - 32 - 1, "{one:?}");
-        assert_eq!(two.2, one.2);
-        assert!(two.0 < one.0 - 12, "{one:?} {two:?}");
-    }
-
-    #[test]
-    fn a_pill_of_keycaps_sits_centred_above_the_dock() {
-        let pill = Shown {
-            content: vec![
-                Run::Keys(vec!["⌘".into(), "V".into()]),
-                Run::Text("  ".into()),
-                Run::Keys(vec!["⏎".into()]),
-            ],
-            look: Look::Pill,
-            home: Position::Bottom,
-            progress: 1.0,
+    fn text_too_wide_ends_in_an_ellipsis_within_its_zone() {
+        let state = BarState {
+            comment: Some("word ".repeat(200)),
+            ..BarState::default()
         };
-        let image = frame(&[pill]).unwrap();
-        let (l, t, r, b) = covered(&image).unwrap();
-        assert!(u32::midpoint(l, r).abs_diff(960) <= 1, "{l}..{r}");
-        assert_eq!(b, 1080 - 120 - 1, "{t}..{b}");
-        // The pill's black is lighter than a card's, and the keycaps lift it.
-        assert_eq!(alpha(&image, l + 3, u32::midpoint(t, b)), 153);
-        let row = u32::midpoint(t, b);
-        let lifted = (l..r)
-            .filter(|&x| image.rgba[as_index((row * 1920 + x) * 4)] > 20)
-            .count();
-        assert!(lifted > 40, "{lifted}");
+        let image = bar(&state, &settings(Edge::Top, 0)).unwrap();
+        let comment = lit(&image, 0, 1920, 0..64).unwrap();
+        assert!(comment.0 >= 460 && comment.1 <= 1280, "{comment:?}");
+        let mut runs = vec![Run::Text("ab".into())];
+        assert!(shorten_longest_text(&mut runs));
+        assert_eq!(runs, [Run::Text("a…".into())]);
+        assert!(!shorten_longest_text(&mut runs));
+    }
+
+    #[test]
+    fn a_card_dims_the_screen_around_its_title() {
+        let image = card("2/3 · Install VS Code").unwrap();
+        assert_eq!(alpha(&image, 10, 10), 140);
+        let title = lit(&image, 0, 1920, 500..580).unwrap();
+        assert!(
+            u32::midpoint(title.0, title.1).abs_diff(960) <= 2,
+            "{title:?}"
+        );
     }
 
     #[test]
@@ -876,26 +815,16 @@ mod tests {
                     .is_some(),
                 "{icon:?}"
             );
-            let width = Line::shape(&[Run::Icon(icon)], SETTLED).unwrap().advance;
+            let width = Line::shape(&[Run::Icon(icon)], STATUS_SIZE)
+                .unwrap()
+                .advance;
             assert!(width > 14.0, "{icon:?} is {width} wide");
         }
     }
 
     #[test]
-    fn text_too_wide_ends_in_an_ellipsis() {
-        let long = "word ".repeat(200);
-        let image = frame(&[card(&long, Position::TopLeft, 1.0)]).unwrap();
-        let (l, _, r, _) = covered(&image).unwrap();
-        assert!(l >= 32 && r <= 1888, "{l}..{r}");
-        let mut runs = vec![Run::Text("ab".into())];
-        assert!(shorten_longest_text(&mut runs));
-        assert_eq!(runs, [Run::Text("a…".into())]);
-        assert!(!shorten_longest_text(&mut runs));
-    }
-
-    #[test]
     fn pngs_round_trip() {
-        let image = frame(&[card("x", Position::TopLeft, 1.0)]).unwrap();
+        let image = card("x").unwrap();
         let path = std::env::temp_dir().join(format!("taperec-overlay-{}.png", std::process::id()));
         write_png(&image, &path).unwrap();
         let decoder = png::Decoder::new(std::io::BufReader::new(File::open(&path).unwrap()));

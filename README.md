@@ -38,7 +38,7 @@ steps:
   - waitWindow: { title: sh, timeout: 30s }
   - paste: git clone https://github.com/Hansehart/o3s.git
   - key: return
-  - text: Cloning o3s               # shown until the next text; "" hides it
+  - chapter: Cloning o3s            # opens on a card, then stays in the bar until the next; "" ends it
   - zoom: { point: { x: 480, y: 200 } }   # zoom the video in there until the next zoom; `off` zooms out
   - warp: { label: Cloning, length: 2s, steps: [waitUntil: { command: test -d o3s, timeout: 2m }] }
   - click: { button: Open, timeout: 2m }
@@ -51,14 +51,16 @@ To edit without recording again, a tape names moments with `mark: <name>` (or `m
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Hansehart/taperec/main/schema/taperec-edit.schema.json
 tracks:
-  text:  [{ text: Building the cage, from: start, until: cage-built }]          # "" hides those beneath
-  speed: [{ label: Building, length: 5s, from: reopen + 3s, until: cage-built }]
-  zoom:  [{ at: results, scale: 1.75, from: results - 0.5s, duration: 6s }]    # or `point: { x, y }`
+  chapter: [{ text: Building the cage, from: start, until: cage-built }]         # "" hides those beneath
+  comment: [{ text: Only allowlisted hosts answer, from: results, until: end }]
+  speed:   [{ label: Building, length: 5s, from: reopen + 3s, until: cage-built }]
+  zoom:    [{ at: results, scale: 1.75, from: results - 0.5s, duration: 6s }]  # or `point: { x, y }`
   # `window: <mark>` instead frames the window under the mark, as far in as it fits
-layout: { text: top-left, effects: top-right, keys: bottom }   # the default; `off` hides a kind
+  hold:    [{ at: results + 1s, duration: 3s }]                                 # the video stands still to read
+bar: { at: top, offset: 0, card: 2s }   # the default; `bottom`, an offset from the edge, `card: 0s` for none
 ```
 
-Texts and speed-ups (label and real duration) announce themselves in the centre of the video the first time they show, then glide to where `layout` keeps them while they last; a zoom's factor goes straight there, as the zoom points at the centre; each shortcut and paste shows as keycaps above the Dock for 1.5 s, labelled by the recording platform, e.g. ⇧ ⌘ P.
+Everything shows in one frosted bar, the screen behind it blurred and darkened, with a zone each: the chapter at the left, the comment in the middle, and at the right the running speed-up (label and real duration) and zoom factor, and each shortcut and paste as keycaps for 1.5 s, labelled by the recording platform, e.g. ⇧ ⌘ P. A new chapter first opens on a card over the dimmed screen while the video holds.
 
 The `videos` output lists the recorded files, one per line. The action runs on `macos-26` (Apple silicon) and `macos-26-intel`, which tapes that need Docker require, downloads the release binaries matching its version and runner and verifies their SHA-256. On Intel it restarts the crash-looping icon agent (actions/runner-images#14751) with Metal logging, rather than aborting on, a shader archive the runner's virtual GPU lacks, so app icons render. Pin it to a release tag or commit SHA. It caches only its own tooling (Homebrew downloads, and the Rust toolchain and build with `from-source`), never what a tape demonstrates.
 

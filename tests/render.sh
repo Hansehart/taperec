@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Renders a synthetic capture with an edit file on any machine with ffmpeg: a text and effects announced in
-# the centre and settled in their corners, a shortcut pill, and the zoom itself, each checked in the frames.
+# Renders a synthetic capture with an edit file on any machine with ffmpeg: a chapter card, the frosted bar,
+# a hold and the zoom, each checked in the frames.
 set -euo pipefail
 
 taperec=${1:?usage: render.sh <taperec> <work-dir>}
@@ -24,16 +24,24 @@ keys:
   - { at: 102, labels: ["⇧", "⌘", "P"] }
   - { at: 109, labels: ["⌘", "V"] }
 EOF
-cat > "$work/t.edit.yaml" <<'EOF'
+# The edit, with and without its zoom.
+edit() {
+    cat <<'EOF'
 tracks:
-  text:
-    - { text: Rendered anywhere, from: shown, until: waiting }
+  chapter:
+    - { text: Rendered anywhere, from: start, until: end }
+  comment:
+    - { text: Typing a command, from: shown, until: waiting }
   speed:
     - { label: Waiting, length: 3s, from: waiting, until: waited }
-  zoom:
-    - { at: results, scale: 2, from: results, until: waiting }
+  hold:
+    - { at: results + 500ms, duration: 2s }
 EOF
-sed '/^  zoom:/,$d' "$work/t.edit.yaml" > "$work/nozoom.edit.yaml"
+    [ "$1" = zoom ] && printf '  zoom:\n    - { at: results, scale: 2, from: results, until: waiting }\n'
+    true
+}
+edit zoom > "$work/t.edit.yaml"
+edit none > "$work/nozoom.edit.yaml"
 
 "$taperec" render "$work/t.timeline.yaml" --edit "$work/t.edit.yaml" --out "$work/t.mp4"
 "$taperec" render "$work/t.timeline.yaml" --edit "$work/nozoom.edit.yaml" --out "$work/nozoom.mp4"
@@ -44,43 +52,39 @@ luma() {
         -vf "crop=$3,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - |
         sed -n 's/.*YAVG=//p' | head -n 1
 }
-fail() { echo "::error::$1"; exit 1; }
-
-# Nine seconds: 0–1 s nothing; the text announced 1–2.2 s, gliding to 2.7 s, top left until 4 s; ⇧⌘P
-# 2–3.5 s; the zoom's badge top right 3–4 s; the speed-up 4–7 s, announced to 5.2 s and top right from 5.7 s;
-# ⌘V 8 s on.
-seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/t.mp4")
-echo "duration: ${seconds}s"
-awk -v s="$seconds" 'BEGIN { exit !(s > 8.8 && s < 9.2) }' || fail "the speed-up left ${seconds}s, expected 9s"
-
-# Each check compares a region with the same region at 0.5 s, before anything shows.
-check() {
-    local name=$1 at=$2 region=$3 ratio=$4 now before
-    now=$(luma "$work/t.mp4" "$at" "$region")
-    before=$(luma "$work/t.mp4" 0.5 "$region")
-    echo "$name: luma $now at ${at}s, $before before"
-    awk -v a="$now" -v b="$before" -v r="$ratio" 'BEGIN { exit !(a < b * r) }' || fail "$name is missing"
-}
-check "the announced text in the centre" 1.5 300:10:810:504 0.6
-check "the settled text top left" 3.5 120:8:40:46 0.6
-check "the shortcut pill above the Dock" 2.5 120:4:900:915 0.6
-check "the zoom badge top right, without an announcement" 3.2 120:8:1740:46 0.6
-check "the speed-up badge top right" 6.5 120:8:1740:46 0.6
-
-# Before its glide, nothing sits top left yet.
-early=$(luma "$work/t.mp4" 2.0 120:8:40:46)
-before=$(luma "$work/t.mp4" 0.5 120:8:40:46)
-echo "top left at 2 s: $early, $before before"
-awk -v a="$early" -v b="$before" 'BEGIN { exit !(a > b * 0.9) }' || fail "the text settled before its announcement ended"
-
-# The zoom is fully eased in by 3.7 s, and both renders match outside it.
-zoom_diff() {
-    ffmpeg -v error -ss "$1" -i "$work/t.mp4" -ss "$1" -i "$work/nozoom.mp4" -frames:v 1 \
+# The mean luma of the difference of two frames: `difference <video> <seconds> <video> <seconds>`.
+difference() {
+    ffmpeg -v error -ss "$2" -i "$1" -ss "$4" -i "$3" -frames:v 1 \
         -lavfi "[0:v][1:v]blend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" \
         -f null - | sed -n 's/.*YAVG=//p' | head -n 1
 }
-zoomed=$(zoom_diff 3.7)
-unzoomed=$(zoom_diff 2)
+fail() { echo "::error::$1"; exit 1; }
+below() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a < b) }'; }
+
+# 0–2 s the chapter's card; then the bar. The comment 3–8 s, ⇧⌘P 4 s, the zoom 5–8 s with its frame held
+# 5.5–7.5 s, the speed-up 8–11 s, ⌘V 12 s; 13 s in all.
+seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/t.mp4")
+echo "duration: ${seconds}s"
+awk -v s="$seconds" 'BEGIN { exit !(s > 12.8 && s < 13.2) }' || fail "the video lasts ${seconds}s, expected 13s"
+
+dimmed=$(luma "$work/t.mp4" 1 300:60:100:900)
+lit=$(luma "$work/t.mp4" 12.5 300:60:100:900)
+echo "card: luma $dimmed under the card, $lit after"
+below "$dimmed" "$(awk -v l="$lit" 'BEGIN { print l * 0.6 }')" || fail "the chapter card does not dim the screen"
+
+band=$(luma "$work/t.mp4" 4.5 1920:64:0:0)
+under=$(luma "$work/t.mp4" 4.5 1920:64:0:64)
+echo "bar: luma $band in the band, $under just below"
+below "$band" "$(awk -v l="$under" 'BEGIN { print l * 0.8 }')" || fail "the bar is missing"
+
+still=$(difference "$work/t.mp4" 6 "$work/t.mp4" 7)
+moving=$(difference "$work/t.mp4" 9 "$work/t.mp4" 10)
+echo "hold: frames 1 s apart differ by $still in the hold, $moving in the speed-up"
+below "$still" 1 || fail "the held frame moves"
+below 1 "$moving" || fail "the video stays still after the hold"
+
+zoomed=$(difference "$work/t.mp4" 5.3 "$work/nozoom.mp4" 5.3)
+unzoomed=$(difference "$work/t.mp4" 3.5 "$work/nozoom.mp4" 3.5)
 echo "zoom difference: $zoomed while zoomed, $unzoomed before"
 awk -v z="$zoomed" -v u="$unzoomed" 'BEGIN { exit !(z > 10 && u < 2) }' || fail "the zoom is missing or spills over"
 echo "render: all checks passed"
